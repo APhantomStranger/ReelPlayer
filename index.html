@@ -802,8 +802,13 @@ const state = {
   eqGains: [0,0,0,0,0,0],  // dB per band
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const CHANGELOG = [
+  { v:'1.3.0', date:'Jul 31, 2026', items:[
+    'Folder import now scans up to 10 levels of subfolders (previous scanner could stop silently on nested trees).',
+    'Import shows a live folder count while scanning and a summary when done, so you can verify how deep it went.',
+    'Errors inside individual subfolders are now logged and counted instead of being swallowed silently.',
+  ]},
   { v:'1.2.0', date:'Jul 31, 2026', items:[
     'New neon-on-black theme with switchable accent colours (green, lime, pink, cyan).',
     'Added this About page with the full version history.',
@@ -1062,22 +1067,42 @@ async function importFiles(entries){
   return {added};
 }
 
-/* Recursively gather audio files from a directory handle. */
-async function scanDir(dirHandle, prefix, acc, guard){
-  for await (const entry of dirHandle.values()){
-    if(guard.count > 60000) return; // safety cap
-    if(entry.kind === 'file'){
-      if(isAudio(entry.name)){
+/* Recursively gather audio files from a directory handle.
+   - Explicit max depth (10 levels below the picked root) so the user's
+     nested Music/Artist/Album/... structure gets scanned in full.
+   - Guard tracks files, folders scanned, and any errors so scanning can
+     be verified visibly rather than failing silently. */
+const SCAN_MAX_DEPTH = 10;   // root = depth 0; scans up to 10 levels deep
+async function scanDir(dirHandle, prefix, acc, guard, depth){
+  if(depth === undefined) depth = 0;
+  guard.foldersScanned = (guard.foldersScanned||0) + 1;
+  if(guard.onProgress) guard.onProgress(guard);
+  let iter;
+  try{ iter = dirHandle.values(); }
+  catch(e){ guard.errors=(guard.errors||0)+1; console.warn('scanDir open failed at "'+prefix+'":',e); return; }
+  try{
+    for await (const entry of iter){
+      if(guard.count > 60000) return; // safety cap on files
+      if(entry.kind === 'file'){
+        if(isAudio(entry.name)){
+          try{
+            const file = await entry.getFile();
+            acc.push({ file, path: prefix + entry.name, handle: entry });
+            guard.count++;
+          }catch(e){ guard.errors=(guard.errors||0)+1; console.warn('getFile failed for',prefix+entry.name,e); }
+        }
+      }else if(entry.kind === 'directory'){
+        if(depth >= SCAN_MAX_DEPTH){
+          guard.skippedDeep = (guard.skippedDeep||0) + 1;
+          console.warn('depth limit hit; skipping "'+prefix+entry.name+'/"');
+          continue;
+        }
         try{
-          const file = await entry.getFile();
-          acc.push({ file, path: prefix + entry.name, handle: entry });
-          guard.count++;
-        }catch(e){/* skip */}
+          await scanDir(entry, prefix + entry.name + '/', acc, guard, depth+1);
+        }catch(e){ guard.errors=(guard.errors||0)+1; console.warn('recurse failed at "'+prefix+entry.name+'/":',e); }
       }
-    }else if(entry.kind === 'directory'){
-      try{ await scanDir(entry, prefix + entry.name + '/', acc, guard); }catch(e){/* skip */}
     }
-  }
+  }catch(e){ guard.errors=(guard.errors||0)+1; console.warn('scanDir iterate failed at "'+prefix+'":',e); }
 }
 
 async function pickFolderFSAccess(){
@@ -1097,22 +1122,43 @@ async function scanAndImportFolder(showToast){
   if(!state.dirHandle) return;
   if(showToast) toastShow('Scanning folder', true);
   const acc = [];
+  const guard = {count:0, foldersScanned:0, errors:0, skippedDeep:0,
+    onProgress:(g)=>{ if(showToast) toastProgress(0, 'Scanned '+g.foldersScanned+' folder'+(g.foldersScanned===1?'':'s')+', found '+g.count+' songs'); }
+  };
   try{
-    await scanDir(state.dirHandle, '', acc, {count:0});
+    await scanDir(state.dirHandle, '', acc, guard, 0);
   }catch(e){ console.warn('scan error', e); }
+  const diag = 'Scan complete: '+guard.foldersScanned+' folder'+(guard.foldersScanned===1?'':'s')
+    +', '+acc.length+' audio file'+(acc.length===1?'':'s')
+    +(guard.skippedDeep? ', '+guard.skippedDeep+' subfolder'+(guard.skippedDeep===1?'':'s')+' past depth '+SCAN_MAX_DEPTH+' skipped':'')
+    +(guard.errors? ', '+guard.errors+' errors (see console)':'');
+  console.log('[Reel] '+diag);
+  if(showToast) toastProgress(1, diag);
   await importFiles(acc);
   clearBanner();
 }
 
-/* Fallback: <input webkitdirectory> or multiple files. */
+/* Fallback: <input webkitdirectory> or multiple files.
+   webkitdirectory hands back every file in the tree with its relative path,
+   so this is already recursive at all depths — but we report how many
+   folders were seen so the user can verify. */
 async function handleInputFiles(fileList){
   const entries = [];
+  const folders = new Set();
+  let scanned = 0;
   for(const f of fileList){
-    if(!isAudio(f.name)) continue;
+    scanned++;
     const rel = f.webkitRelativePath && f.webkitRelativePath.length ? f.webkitRelativePath : f.name;
+    const slash = rel.lastIndexOf('/');
+    if(slash>=0) folders.add(rel.slice(0, slash));
+    if(!isAudio(f.name)) continue;
     entries.push({ file:f, path: rel, handle:null });
   }
-  if(entries.length===0){ toastDone('No supported audio found', false, true); return; }
+  console.log('[Reel] file input: '+scanned+' items across '+folders.size+' folders; '+entries.length+' audio files.');
+  if(entries.length===0){
+    toastDone('No supported audio found in '+folders.size+' folders', false, true);
+    return;
+  }
   await importFiles(entries);
 }
 
@@ -1876,7 +1922,7 @@ function startAutoRescan(){
     try{
       const perm = await state.dirHandle.queryPermission({mode:'read'});
       if(perm!=='granted') return;
-      const acc=[]; await scanDir(state.dirHandle,'',acc,{count:0});
+      const acc=[]; await scanDir(state.dirHandle,'',acc,{count:0},0);
       // only import if there might be new ones
       await importFiles(acc);
     }catch(e){/* ignore */}

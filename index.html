@@ -394,8 +394,9 @@
 
   .player-info{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;}
   .player-info .t{min-width:0;flex:1;}
-  .player-title{font-size:28px;font-weight:800;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .player-artist{font-size:18px;color:var(--muted);margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .player-title{font-size:36px;font-weight:800;letter-spacing:-.02em;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .player-artist{font-size:24px;font-weight:600;color:var(--amber);margin-top:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .player-album{font-size:19px;color:var(--muted);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .player-fav{width:60px;height:60px;flex:0 0 auto;display:grid;place-items:center;color:var(--muted);}
   .player-fav svg{width:32px;height:32px;}
 
@@ -603,8 +604,9 @@
       top:calc(var(--safe-t) + 62px);bottom:calc(var(--safe-b) + 12px);
       justify-content:space-around;padding-top:0;gap:4px;
     }
-    .player-title{font-size:22px;}
-    .player-artist{font-size:15px;}
+    .player-title{font-size:26px;}
+    .player-artist{font-size:18px;margin-top:4px;}
+    .player-album{font-size:14px;margin-top:2px;}
     .player-info{margin:0;}
     .transport{margin:2px 0;}
     .t-play{width:82px;height:82px;}
@@ -767,6 +769,7 @@
       <div class="t">
         <div class="player-title" id="playerTitle">—</div>
         <div class="player-artist" id="playerArtist">—</div>
+        <div class="player-album" id="playerAlbum">—</div>
       </div>
       <button class="player-fav" id="playerFav" aria-label="Like"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></button>
     </div>
@@ -847,10 +850,12 @@
 /* ---------- tiny helpers ---------- */
 const $ = (id) => document.getElementById(id);
 const AUDIO_EXTS = ['mp3','wav','m4a','mp4','aac','ogg','oga','opus','flac','webm','m4b','aif','aiff','wma','3gp','amr','mka','caf'];
+const IMG_EXTS = ['jpg','jpeg','png','webp','gif','bmp'];
 const hasFSAccess = typeof window.showDirectoryPicker === 'function';
 
 function extOf(name){ const i = name.lastIndexOf('.'); return i<0 ? '' : name.slice(i+1).toLowerCase(); }
 function isAudio(name){ return AUDIO_EXTS.includes(extOf(name)); }
+function isImage(name){ return IMG_EXTS.includes(extOf(name)); }
 function fmtTime(s){
   if(!isFinite(s) || s<0) return '0:00';
   s = Math.floor(s);
@@ -895,8 +900,20 @@ const state = {
   eqGains: [0,0,0,0,0,0],  // dB per band
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '1.5.3';
+const APP_VERSION = '1.7.0';
 const CHANGELOG = [
+  { v:'1.7.0', date:'Aug 1, 2026', items:[
+    'Now Playing screen: title, artist, and album are shown as three separate, much larger lines (title 36px, artist 24px in accent colour, album 19px) right below the artwork and above the controls.',
+    'Fixed Play Random always starting on the same song — it was pinning song #1 as a fixed "anchor" before shuffling the rest. Every tap now fully randomizes the whole library, including which song plays first.',
+    'Fixed playback pausing when returning to the app from the background: a full folder rescan was triggering every time the app came back to the foreground, and doing that heavy work at that exact moment could interrupt playback. Rescans are now skipped entirely whenever a song is playing, and a safety check auto-resumes playback if anything external pauses it.',
+    'The folder-access permission prompt now fires on the very first tap anywhere in the app (not tied to hitting a specific song), and — as before — only once per app session, never once per song. Note: Chrome does not allow this prompt to be remembered across app restarts by design; this is a browser security rule that applies to every website, not something Reel can turn off.',
+  ]},
+  { v:'1.6.0', date:'Jul 31, 2026', items:[
+    'Album art now also loads from image files sitting in the same folder as the song (cover.jpg, folder.png, front.jpg, etc.) — not just art embedded inside the audio file itself.',
+    'This works for every audio format, not just mp3, since it doesn\'t depend on reading tags out of the file.',
+    'Folder images are looked up once per folder and reused for every track in it, so a folder of 12 songs doesn\'t re-scan for its cover 12 times.',
+    'Note: this fallback needs the folder-picker import method (Settings → Choose music folder). The "pick individual files" import can\'t see sibling image files, so it only shows embedded mp3 art.',
+  ]},
   { v:'1.5.3', date:'Jul 31, 2026', items:[
     'Home screen scaled up dramatically for driving. Reel title 42px, Settings and Rescan buttons 72px, search bar 78px with 22px text, sort pills (Title/Artist/Album) 20px text at 66px height, Play Random button 112px tall with 26px label.',
     'Song rows are now 96px tall with 68px album thumbnails, 20px titles, 16px artist/album lines, and 56px ••• tap targets.',
@@ -1653,9 +1670,20 @@ function renderDetail(){
 
 /* ============================================================================
    Lazy album art (extract on demand from files, bounded cache)
+   Two sources, tried in order:
+     1) Embedded ID3v2 art (mp3 files only — this is the ID3 APIC frame)
+     2) A cover image file sitting in the SAME FOLDER as the song
+        (cover.jpg, folder.png, front.jpg, album.jpg, or any other image
+        if none of those common names are present). This is the fallback
+        most libraries actually need, since many rips ship art as a
+        separate file rather than embedded in every track.
+   Folder-image lookups are cached per-folder so a folder with 12 tracks
+   only gets scanned for its cover image once, not 12 times.
 ============================================================================ */
 const artUrlCache = new Map(); // songId -> objectURL (bounded LRU)
-const artNegative = new Set(); // songs known to have no art
+const artNegative = new Set(); // songs known to have no art at all
+const folderArtCache = new Map(); // dirPath -> Blob | null (checked, none found)
+
 function cacheArt(id, url){
   artUrlCache.set(id,url);
   if(artUrlCache.size>120){
@@ -1664,22 +1692,97 @@ function cacheArt(id, url){
     artUrlCache.delete(k);
   }
 }
+function parentDirOf(path){
+  if(!path) return '';
+  const i = path.lastIndexOf('/');
+  return i<0 ? '' : path.slice(0,i);
+}
+/* Walk from the root folder handle down to the directory handle for a
+   given relative path ('' = the root itself). */
+async function walkDirHandle(rootHandle, dirPath){
+  if(!rootHandle) return null;
+  if(!dirPath) return rootHandle;
+  const parts = dirPath.split('/').filter(Boolean);
+  let cur = rootHandle;
+  for(const p of parts){
+    try{ cur = await cur.getDirectoryHandle(p); }
+    catch(e){ return null; }
+  }
+  return cur;
+}
+/* Rank candidate image filenames so an obviously-intentional cover image
+   (cover.jpg, folder.png, front.jpg, album art, etc.) wins over some
+   unrelated photo that happens to sit in the same folder. Anything image
+   at all is still used as a last resort if nothing matches these names. */
+function coverNameScore(name){
+  const n = name.toLowerCase();
+  if(/(^|[^a-z])cover([^a-z]|$)/.test(n)) return 0;
+  if(/(^|[^a-z])folder([^a-z]|$)/.test(n)) return 1;
+  if(/(^|[^a-z])front([^a-z]|$)/.test(n)) return 2;
+  if(/(^|[^a-z])albumart([^a-z]|$)/.test(n)) return 3;
+  if(/(^|[^a-z])album([^a-z]|$)/.test(n)) return 4;
+  if(/(^|[^a-z])art(work)?([^a-z]|$)/.test(n)) return 5;
+  return 9;
+}
+async function findFolderArt(dirPath){
+  if(folderArtCache.has(dirPath)) return folderArtCache.get(dirPath);
+  let blob = null;
+  if(state.dirHandle){
+    try{
+      // Non-prompting check only: art loading happens while scrolling lists,
+      // not inside a user gesture, so we must never trigger a permission
+      // popup here. If access isn't already granted, we just skip folder
+      // art for this session (playback still requests it properly on tap).
+      let ok = true;
+      if(typeof state.dirHandle.queryPermission === 'function'){
+        ok = (await state.dirHandle.queryPermission({mode:'read'})) === 'granted';
+      }
+      if(ok){
+        const dirHandle = await walkDirHandle(state.dirHandle, dirPath);
+        if(dirHandle){
+          const candidates = [];
+          for await (const entry of dirHandle.values()){
+            if(entry.kind==='file' && isImage(entry.name)) candidates.push(entry);
+          }
+          if(candidates.length){
+            candidates.sort((a,b)=> coverNameScore(a.name)-coverNameScore(b.name) || a.name.localeCompare(b.name));
+            blob = await candidates[0].getFile();
+          }
+        }
+      }
+    }catch(e){ /* treat as no folder art available */ }
+  }
+  folderArtCache.set(dirPath, blob);
+  return blob;
+}
 async function getArtUrl(id){
   if(artUrlCache.has(id)) return artUrlCache.get(id);
   if(artNegative.has(id)) return null;
   const s = state.library.get(id);
   if(!s) return null;
-  let file = s.file;
-  try{ if(!file && s.handle) file = await s.handle.getFile(); }catch(e){ file=null; }
-  if(!file){ artNegative.add(id); return null; }
-  if(extOf(s.name)!=='mp3'){ artNegative.add(id); return null; }
+
+  // 1) Embedded ID3v2 art — mp3 only, this format is what the parser understands.
+  if(extOf(s.name)==='mp3'){
+    let file = s.file;
+    try{ if(!file && s.handle) file = await s.handle.getFile(); }catch(e){ file=null; }
+    if(file){
+      try{
+        let head = await readHead(file, 96*1024);
+        const declared = id3DeclaredSize(head);
+        if(declared>head.byteLength && declared<3*1024*1024) head = await readHead(file, declared+16);
+        const art = parseArt(head);
+        if(art && art.blob){ const url = URL.createObjectURL(art.blob); cacheArt(id,url); return url; }
+      }catch(e){}
+    }
+  }
+
+  // 2) Folder image fallback — works for every format, since it doesn't
+  //    depend on parsing the audio file's tags at all.
   try{
-    let head = await readHead(file, 96*1024);
-    const declared = id3DeclaredSize(head);
-    if(declared>head.byteLength && declared<3*1024*1024) head = await readHead(file, declared+16);
-    const art = parseArt(head);
-    if(art && art.blob){ const url = URL.createObjectURL(art.blob); cacheArt(id,url); return url; }
+    const blob = await findFolderArt(parentDirOf(s.path));
+    if(blob){ const url = URL.createObjectURL(blob); cacheArt(id,url); return url; }
   }catch(e){}
+
   artNegative.add(id); return null;
 }
 /* fill in [data-art-song] placeholders within a container */
@@ -1951,7 +2054,8 @@ function updateNowPlaying(){
   $('miniTitle').textContent = s.title;
   $('miniSub').textContent = s.artist;
   $('playerTitle').textContent = s.title;
-  $('playerArtist').textContent = s.artist + (s.album&&s.album!=='Unknown Album' ? ' — '+s.album : '');
+  $('playerArtist').textContent = s.artist;
+  $('playerAlbum').textContent = (s.album && s.album!=='Unknown Album') ? s.album : '';
   $('durTime').textContent = s.duration? fmtTime(s.duration) : '0:00';
   updateFavBtn();
   // art
@@ -2236,6 +2340,7 @@ function startAutoRescan(){
   clearInterval(rescanTimer);
   rescanTimer = setInterval(async ()=>{
     if(document.hidden) return;
+    if(state.playing) return; // never let a background scan touch anything while a song is actively playing
     try{
       const perm = await state.dirHandle.queryPermission({mode:'read'});
       if(perm!=='granted') return;
@@ -2348,12 +2453,23 @@ function wire(){
   $('btnPrev').addEventListener('click', prevTrack);
   $('btnShuffle').addEventListener('click', toggleShuffle);
   $('btnPlayRandom').addEventListener('click', ()=>{
-    // Shuffle the ENTIRE library (ignoring current search/sort filter) and play now
+    // Shuffle the ENTIRE library (ignoring current search/sort filter) and play now.
+    // We build the shuffle order directly here rather than going through
+    // playContext()/buildShuffle(), because buildShuffle() deliberately pins
+    // the requested start index FIRST in the order (useful when a user taps
+    // a specific song with shuffle already on — "play this one, then shuffle
+    // the rest"). Play Random has no such anchor: every song, including the
+    // first one played, should be equally likely to be picked.
     const all = Array.from(state.library.keys());
     if(all.length===0){ toastDone('No songs to play', false, true); return; }
     state.shuffle = true;
     $('btnShuffle').classList.add('active');
-    playContext(all, 0);
+    state.queue = all.slice();
+    const idxs = all.map((_,i)=>i);
+    for(let i=idxs.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [idxs[i],idxs[j]]=[idxs[j],idxs[i]]; }
+    state.shuffleOrder = idxs;
+    state.shufflePos = 0;
+    playQueueAt(state.shuffleOrder[0]);
     openPlayer();
   });
   $('btnRepeat').addEventListener('click', cycleRepeat);
@@ -2636,9 +2752,11 @@ async function boot(){
           await scanAndImportFolder(loadedCount===0);   // only show scan toast if nothing was pre-loaded
           startAutoRescan();
         }else{
-          // whether or not songs are already visible from persistence, the
-          // user needs to reconnect the folder to play them.
-          showResumeBanner();
+          // Permission wasn't remembered from last time — this is required by
+          // the browser every new session (see primeFolderPermission below).
+          // Songs already show from the persisted library; tapping anywhere
+          // will trigger the one-time permission prompt automatically.
+          primeFolderPermission();
         }
       }
     }catch(e){ console.warn('resume failed', e); }
@@ -2646,9 +2764,45 @@ async function boot(){
   refreshCurrentView();
 }
 
+/* Chrome's File System Access API deliberately does not remember folder
+   permission across browser/app restarts — this is a fixed browser security
+   rule and no website can bypass it. The best a web app can do is (a) ask
+   only ONCE per session, on the ROOT folder rather than per file (done —
+   see fileForSong), and (b) ask as early as possible so it doesn't feel
+   tied to a specific action. This listens for the very first tap anywhere
+   in the app and uses it to request permission immediately, so by the time
+   the user actually picks a song, it's often already granted. */
+function primeFolderPermission(){
+  if(!state.dirHandle) return;
+  const prime = async ()=>{
+    document.removeEventListener('pointerdown', prime, true);
+    try{
+      const perm = await state.dirHandle.requestPermission({mode:'read'});
+      if(perm==='granted'){
+        state.usingFolder = true;
+        await scanAndImportFolder(false);
+        startAutoRescan();
+      }
+    }catch(e){ /* user dismissed — they'll be asked again on their first song tap */ }
+  };
+  document.addEventListener('pointerdown', prime, {capture:true, once:true});
+}
+
 document.addEventListener('visibilitychange', ()=>{
-  if(!document.hidden && state.usingFolder && state.dirHandle){
-    // opportunistic rescan when returning to app
+  if(document.hidden) return;
+  // Safety net: if the OS/browser silently paused the <audio> element while
+  // the app was backgrounded (some Android/Chrome builds do this even though
+  // our own code never calls pause() here), resume it automatically. The
+  // ONLY thing that should ever pause playback is the user tapping pause.
+  if(state.playing && audio.paused && audio.src){
+    audio.play().catch(()=>{ /* if this fails, the user's next tap will still start it */ });
+  }
+  // Never trigger a folder rescan while a song is actively playing. Walking
+  // the whole folder tree and re-reading every file is heavy work; doing it
+  // right at the moment the app comes back to the foreground was causing
+  // audible stutters/pauses in playback. Rescans still happen normally via
+  // the 45s background interval whenever nothing is playing.
+  if(state.usingFolder && state.dirHandle && !state.playing){
     state.dirHandle.queryPermission({mode:'read'}).then(p=>{ if(p==='granted') scanAndImportFolder(false); }).catch(()=>{});
   }
 });

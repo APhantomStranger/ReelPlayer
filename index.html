@@ -366,13 +366,20 @@
   .player-top svg{width:26px;height:26px;}
   .player-top .lbl{font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);}
 
-  .player-art-wrap{flex:1;display:flex;align-items:center;justify-content:center;padding:22px 0;min-height:0;}
+  .player-art-wrap{
+    flex:0 0 auto;                          /* don't grow — controls get the space */
+    height:min(45vh,45vw + 60px);           /* about half the screen */
+    display:flex;align-items:center;justify-content:center;
+    padding:12px 0 8px;min-height:0;
+  }
   .player-art{
-    width:min(80vw,360px);aspect-ratio:1;border-radius:22px;overflow:hidden;
+    width:min(78vw, 42vh);                  /* fits within the wrap on tall + wide phones */
+    height:min(78vw, 42vh);
+    aspect-ratio:1;border-radius:22px;overflow:hidden;
     background:linear-gradient(145deg,var(--surface-3),var(--surface));display:grid;place-items:center;
     box-shadow:0 26px 70px rgba(0,0,0,.55);border:1px solid var(--line-2);
     transition:transform .3s ease;
-    touch-action:pan-y;         /* keep horizontal swipes for prev/next */
+    touch-action:pan-y;                     /* keep horizontal swipes for prev/next */
     cursor:grab;user-select:none;
   }
   .player-art:active{cursor:grabbing;}
@@ -380,43 +387,50 @@
   .player-art img{width:100%;height:100%;object-fit:cover;}
   .player-art svg{width:80px;height:80px;color:var(--muted-2);}
 
-  .player-info{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px;}
+  /* Everything below the art shares the remaining ~half of the screen */
+  .player-controls{
+    flex:1 1 auto;display:flex;flex-direction:column;justify-content:space-between;
+    min-height:0;gap:6px;padding-top:10px;
+  }
+
+  .player-info{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;}
   .player-info .t{min-width:0;flex:1;}
-  .player-title{font-size:26px;font-weight:800;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .player-artist{font-size:17px;color:var(--muted);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .player-fav{width:56px;height:56px;flex:0 0 auto;display:grid;place-items:center;color:var(--muted);}
-  .player-fav svg{width:30px;height:30px;}
+  .player-title{font-size:28px;font-weight:800;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .player-artist{font-size:18px;color:var(--muted);margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .player-fav{width:60px;height:60px;flex:0 0 auto;display:grid;place-items:center;color:var(--muted);}
+  .player-fav svg{width:32px;height:32px;}
 
-  /* seek */
-  .seek{margin-bottom:6px;}
-  .seek-track{height:8px;border-radius:5px;background:var(--surface-3);position:relative;cursor:pointer;}
-  .seek-fill{position:absolute;left:0;top:0;bottom:0;background:var(--amber);border-radius:5px;width:0%;}
-  .seek-knob{position:absolute;top:50%;width:18px;height:18px;border-radius:50%;background:#fff;transform:translate(-50%,-50%);left:0%;box-shadow:0 2px 8px rgba(0,0,0,.4);}
-  .seek-times{display:flex;justify-content:space-between;margin-top:10px;font-family:var(--mono);font-size:14px;color:var(--muted);font-variant-numeric:tabular-nums;letter-spacing:-.02em;}
+  /* seek — chunky enough to grab while driving */
+  .seek{margin:4px 0 0;}
+  .seek-track{height:12px;border-radius:6px;background:var(--surface-3);position:relative;cursor:pointer;}
+  .seek-fill{position:absolute;left:0;top:0;bottom:0;background:var(--amber);border-radius:6px;width:0%;}
+  .seek-knob{position:absolute;top:50%;width:26px;height:26px;border-radius:50%;background:#fff;transform:translate(-50%,-50%);left:0%;box-shadow:0 3px 10px rgba(0,0,0,.45);}
+  .seek-times{display:flex;justify-content:space-between;margin-top:10px;font-family:var(--mono);font-size:16px;color:var(--muted);font-variant-numeric:tabular-nums;letter-spacing:-.02em;}
 
-  .transport{display:flex;align-items:center;justify-content:space-between;margin:18px 0 20px;}
+  /* transport — the star of the driving-friendly redesign */
+  .transport{display:flex;align-items:center;justify-content:space-between;gap:6px;margin:2px 0;}
   .transport button{display:grid;place-items:center;color:var(--text);}
-  .t-side{width:64px;height:64px;color:var(--muted);border-radius:18px;}
+  .t-side{width:78px;height:78px;color:var(--muted);border-radius:22px;}
   .t-side:active{background:var(--surface-2);}
   .t-side.active{color:var(--amber);}
-  .t-side svg{width:32px;height:32px;}
-  .t-skip{width:76px;height:76px;border-radius:20px;}
+  .t-side svg{width:38px;height:38px;}
+  .t-skip{width:104px;height:104px;border-radius:26px;}
   .t-skip:active{background:var(--surface-2);}
-  .t-skip svg{width:42px;height:42px;}
-  .t-play{width:92px;height:92px;border-radius:50%;background:var(--amber);color:#05140b;box-shadow:0 10px 30px rgba(var(--accent-rgb),.35);}
+  .t-skip svg{width:58px;height:58px;}
+  .t-play{width:128px;height:128px;border-radius:50%;background:var(--amber);color:#05140b;box-shadow:0 14px 40px rgba(var(--accent-rgb),.45), 0 0 30px rgba(var(--accent-rgb),.25);}
   .t-play:active{transform:scale(.95);}
-  .t-play svg{width:44px;height:44px;}
+  .t-play svg{width:62px;height:62px;}
   .repeat-badge{position:relative;}
-  .repeat-badge .one{position:absolute;top:10px;right:10px;font-size:10px;font-weight:800;font-family:var(--mono);color:var(--amber);}
+  .repeat-badge .one{position:absolute;top:14px;right:16px;font-size:12px;font-weight:800;font-family:var(--mono);color:var(--amber);}
 
-  .player-vol{display:flex;align-items:center;gap:14px;}
-  .player-vol svg{width:22px;height:22px;color:var(--muted);flex:0 0 auto;}
-  .vol-track{flex:1;height:7px;border-radius:5px;background:var(--surface-3);position:relative;cursor:pointer;}
-  .vol-fill{position:absolute;left:0;top:0;bottom:0;background:var(--muted);border-radius:5px;width:80%;}
+  .player-vol{display:flex;align-items:center;gap:16px;margin-top:2px;}
+  .player-vol svg{width:24px;height:24px;color:var(--muted);flex:0 0 auto;}
+  .vol-track{flex:1;height:10px;border-radius:6px;background:var(--surface-3);position:relative;cursor:pointer;}
+  .vol-fill{position:absolute;left:0;top:0;bottom:0;background:var(--muted);border-radius:6px;width:80%;}
 
   /* Up next (queue) drawer trigger row */
-  .queue-btn{display:flex;align-items:center;justify-content:center;gap:10px;margin-top:18px;color:var(--muted);font-size:15px;font-weight:600;min-height:48px;}
-  .queue-btn svg{width:20px;height:20px;}
+  .queue-btn{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:6px;color:var(--muted);font-size:16px;font-weight:600;min-height:52px;}
+  .queue-btn svg{width:22px;height:22px;}
 
   /* ---------- Sheets / modals ---------- */
   .scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:70;opacity:0;pointer-events:none;transition:opacity .2s;}
@@ -572,23 +586,39 @@
     .segbar{padding-bottom:0;}
     .play-random{margin:10px 16px 6px;height:56px;font-size:17px;}
 
-    /* Shrink full-screen player so everything fits vertically */
-    .player{padding:calc(var(--safe-t) + 4px) 20px calc(var(--safe-b) + 10px);}
-    .player-art-wrap{padding:10px 0;}
-    .player-art{width:min(28vh,220px);}
+    /* Full-screen player in landscape:
+       - Player-top spans the whole top
+       - Art on the left, controls to the right in a two-column body
+    */
+    .player{padding:calc(var(--safe-t) + 4px) 20px calc(var(--safe-b) + 8px);}
+    /* new grid: top row, then art | controls */
+    .player-art-wrap{
+      height:auto;flex:0 0 auto;padding:0;
+      width:min(42vh, 44vw);align-self:stretch;
+    }
+    .player-art{width:min(38vh, 40vw);height:min(38vh, 40vw);}
     .player-art svg{width:56px;height:56px;}
-    .player-title{font-size:20px;}
-    .player-artist{font-size:14px;}
-    .player-info{margin-bottom:8px;}
-    .transport{margin:6px 0 8px;}
-    .t-play{width:70px;height:70px;}
-    .t-play svg{width:34px;height:34px;}
-    .t-skip{width:60px;height:60px;}
-    .t-skip svg{width:34px;height:34px;}
-    .t-side{width:52px;height:52px;}
-    .t-side svg{width:26px;height:26px;}
-    .queue-btn{margin-top:6px;}
-    .seek-times{margin-top:4px;}
+
+    .player-controls{
+      position:absolute;left:calc(min(42vh, 44vw) + 32px);right:20px;
+      top:calc(var(--safe-t) + 62px);bottom:calc(var(--safe-b) + 12px);
+      justify-content:space-around;padding-top:0;gap:4px;
+    }
+    .player-title{font-size:22px;}
+    .player-artist{font-size:15px;}
+    .player-info{margin:0;}
+    .transport{margin:2px 0;}
+    .t-play{width:82px;height:82px;}
+    .t-play svg{width:40px;height:40px;}
+    .t-skip{width:68px;height:68px;border-radius:20px;}
+    .t-skip svg{width:38px;height:38px;}
+    .t-side{width:56px;height:56px;border-radius:18px;}
+    .t-side svg{width:28px;height:28px;}
+    .queue-btn{margin-top:2px;min-height:44px;}
+    .seek-times{margin-top:6px;font-size:13px;}
+    .seek-track{height:8px;}
+    .seek-knob{width:20px;height:20px;}
+    .vol-track{height:7px;}
 
     /* Detail hero can go wider */
     .detail-hero{padding:8px 20px 10px;}
@@ -733,6 +763,7 @@
     <div class="player-art-wrap">
       <div class="player-art" id="playerArt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
     </div>
+    <div class="player-controls">
     <div class="player-info">
       <div class="t">
         <div class="player-title" id="playerTitle">—</div>
@@ -758,9 +789,10 @@
     </div>
     <div class="sleep-chip hidden" id="sleepChip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2"/><path d="M5 3 2 6"/><path d="m22 6-3-3"/></svg><span id="sleepChipTxt">Sleep 30:00</span></div>
     <button class="queue-btn" id="queueBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="16" y2="6"/><line x1="3" y1="12" x2="16" y2="12"/><line x1="3" y1="18" x2="13" y2="18"/><polyline points="19 9 22 12 19 15"/></svg>Up Next</button>
-  </div>
+    </div>
 
-  <audio id="audio" preload="metadata"></audio>
+    <audio id="audio" preload="metadata"></audio>
+  </div>
 </div>
 
 <!-- Sheets -->
@@ -864,8 +896,14 @@ const state = {
   eqGains: [0,0,0,0,0,0],  // dB per band
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.5.1';
 const CHANGELOG = [
+  { v:'1.5.1', date:'Jul 31, 2026', items:[
+    'Folder access is now requested once per session on the root folder, not per file — so you stop seeing the "Allow this site to view and copy files?" prompt on every song.',
+    'Fixed the full-screen player failing to open on the very first song of a session (it used to only open from the second tap onward).',
+    'Full-screen player redesigned: album art takes the top half, transport controls take the bottom half. Play button is 128px, skip buttons 104px, shuffle/repeat 78px — all much easier to hit while driving.',
+    'Landscape rebalanced to art-left / big-controls-right so the layout stays usable when the phone rotates.',
+  ]},
   { v:'1.5.0', date:'Jul 31, 2026', items:[
     'Tapping a song, hitting Play Random, or using Play from the ••• menu now opens the full-screen player automatically — big album art, big Play/Pause, big Next/Previous.',
     'Swipe left on the album art to skip to the next song; swipe right for the previous song.',
@@ -1699,17 +1737,20 @@ async function fileForSong(s){
       return s.file;
     }catch(e){ /* fall through to handle */ }
   }
+  // Only request permission on the ROOT folder handle. Chrome extends that
+  // grant to every child, so one prompt per session covers all songs.
+  // (Previously we asked on each file handle, which prompted for every song.)
+  if(state.dirHandle && typeof state.dirHandle.queryPermission === 'function'){
+    try{
+      const perm = await state.dirHandle.queryPermission({mode:'read'});
+      if(perm !== 'granted'){
+        const req = await state.dirHandle.requestPermission({mode:'read'});
+        if(req !== 'granted') return null;
+      }
+    }catch(e){ /* ignore, try direct file handle below */ }
+  }
   if(s.handle){
     try{
-      // If the persisted handle lost permission (e.g. after a restart),
-      // ask for it now — this call happens inside a user gesture (the play tap).
-      if(typeof s.handle.queryPermission === 'function'){
-        const perm = await s.handle.queryPermission({mode:'read'});
-        if(perm !== 'granted'){
-          const req = await s.handle.requestPermission({mode:'read'});
-          if(req !== 'granted') return null;
-        }
-      }
       const f = await s.handle.getFile();
       if(f){ s.file = f; return f; }
     }catch(e){
@@ -1717,8 +1758,7 @@ async function fileForSong(s){
     }
   }
   // Last resort: walk down state.dirHandle using the song's stored path.
-  // Fixes cases where the persisted per-file handle became invalid but the
-  // root folder handle is still good.
+  // Handles the case where the persisted per-file handle became invalid.
   if(state.dirHandle && s.path){
     try{
       const walked = await walkPath(state.dirHandle, s.path);
@@ -1733,19 +1773,10 @@ async function fileForSong(s){
 }
 
 /* Follow a stored relative path (e.g. "Rock/Nirvana/Bleach/01.mp3")
-   from the root folder handle to the actual file handle. */
+   from the root folder handle to the actual file handle. Assumes the
+   root already has read permission (fileForSong takes care of that). */
 async function walkPath(rootHandle, relPath){
   if(!rootHandle || !relPath) return null;
-  // ensure permission on the root
-  try{
-    if(typeof rootHandle.queryPermission === 'function'){
-      const p = await rootHandle.queryPermission({mode:'read'});
-      if(p !== 'granted'){
-        const r = await rootHandle.requestPermission({mode:'read'});
-        if(r !== 'granted') return null;
-      }
-    }
-  }catch(e){ return null; }
   const parts = relPath.split('/').filter(Boolean);
   if(parts.length===0) return null;
   let cur = rootHandle;
@@ -1946,7 +1977,14 @@ function updateMediaSession(s){
 /* ============================================================================
    Player open/close + seek/vol interaction
 ============================================================================ */
-function openPlayer(){ if(!state.currentId) return; $('player').classList.add('open'); }
+function openPlayer(){
+  // Deliberately no currentId guard: on the very first play, playSong() is
+  // still awaiting the file when openPlayer() is called synchronously after
+  // playContext(). If we guarded on currentId here, the player would fail to
+  // open on the first song and only work from the second onward. The player
+  // UI safely shows "—" placeholders until updateNowPlaying() fires.
+  $('player').classList.add('open');
+}
 function closePlayer(){ $('player').classList.remove('open'); }
 
 function seekFromClientX(clientX){

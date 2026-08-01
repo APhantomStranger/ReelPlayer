@@ -859,8 +859,13 @@ const state = {
   eqGains: [0,0,0,0,0,0],  // dB per band
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.4.1';
 const CHANGELOG = [
+  { v:'1.4.1', date:'Jul 31, 2026', items:[
+    'Fixed "Can\'t open file" error when playing songs after reopening the app: playback now requests folder permission automatically on the play tap, and falls back to re-locating the file by path if a stored handle went stale.',
+    'Songs imported this session now keep their live file reference in memory (not just the handle), so playback works immediately even when handle permission would otherwise need to be re-granted.',
+    'Reconnect banner is shown whenever folder permission isn\'t granted, even when persisted songs are already visible.',
+  ]},
   { v:'1.4.0', date:'Jul 31, 2026', items:[
     'Bigger, driving-friendly UI throughout: larger buttons, larger text, taller tap targets everywhere.',
     'Landscape mode: full-screen player switches to an art-left / controls-right layout; header, nav, and hero all adapt.',
@@ -1107,15 +1112,18 @@ async function importFiles(entries){
           title:meta.title, artist:meta.artist, album:meta.album,
           track: parseInt(meta.track,10)||0, year:meta.year||'',
           duration: 0, hasArtChecked:false, artBlob:null,
-          handle: handle||null, file: handle?null:file,
+          // keep BOTH file and handle in memory this session; saveLibrary
+          // drops file (Files can't persist) but keeps handle
+          handle: handle||null, file: file||null,
           addedAt: Date.now(),
         });
         added++;
       }catch(e){ /* skip broken file */ }
     }else{
-      // refresh the handle/file so playback works this session
+      // refresh both references so playback works this session
       const s = state.library.get(id);
-      if(handle) s.handle = handle; else s.file = file;
+      if(handle) s.handle = handle;
+      if(file) s.file = file;
     }
     if(done % 6 === 0 || done===total){
       toastProgress(done/total, done+' / '+total+' scanned · '+added+' new');
@@ -1673,18 +1681,87 @@ audio.volume = state.volume;
 let currentObjectUrl = null;
 
 async function fileForSong(s){
-  if(s.file) return s.file;
+  if(s.file){
+    try{
+      // A cheap sanity read: if the underlying file is gone (renamed/deleted),
+      // .slice(0,0).arrayBuffer() will throw, and we'll try the handle instead.
+      await s.file.slice(0,0).arrayBuffer();
+      return s.file;
+    }catch(e){ /* fall through to handle */ }
+  }
   if(s.handle){
-    try{ return await s.handle.getFile(); }catch(e){ return null; }
+    try{
+      // If the persisted handle lost permission (e.g. after a restart),
+      // ask for it now — this call happens inside a user gesture (the play tap).
+      if(typeof s.handle.queryPermission === 'function'){
+        const perm = await s.handle.queryPermission({mode:'read'});
+        if(perm !== 'granted'){
+          const req = await s.handle.requestPermission({mode:'read'});
+          if(req !== 'granted') return null;
+        }
+      }
+      const f = await s.handle.getFile();
+      if(f){ s.file = f; return f; }
+    }catch(e){
+      console.warn('handle.getFile failed for',s.path,'-',e && e.message ? e.message : e);
+    }
+  }
+  // Last resort: walk down state.dirHandle using the song's stored path.
+  // Fixes cases where the persisted per-file handle became invalid but the
+  // root folder handle is still good.
+  if(state.dirHandle && s.path){
+    try{
+      const walked = await walkPath(state.dirHandle, s.path);
+      if(walked){
+        s.handle = walked;
+        const f = await walked.getFile();
+        if(f){ s.file = f; return f; }
+      }
+    }catch(e){ console.warn('dirHandle walk failed for',s.path,'-',e && e.message ? e.message : e); }
   }
   return null;
+}
+
+/* Follow a stored relative path (e.g. "Rock/Nirvana/Bleach/01.mp3")
+   from the root folder handle to the actual file handle. */
+async function walkPath(rootHandle, relPath){
+  if(!rootHandle || !relPath) return null;
+  // ensure permission on the root
+  try{
+    if(typeof rootHandle.queryPermission === 'function'){
+      const p = await rootHandle.queryPermission({mode:'read'});
+      if(p !== 'granted'){
+        const r = await rootHandle.requestPermission({mode:'read'});
+        if(r !== 'granted') return null;
+      }
+    }
+  }catch(e){ return null; }
+  const parts = relPath.split('/').filter(Boolean);
+  if(parts.length===0) return null;
+  let cur = rootHandle;
+  for(let i=0; i<parts.length-1; i++){
+    try{ cur = await cur.getDirectoryHandle(parts[i]); }
+    catch(e){ return null; }
+  }
+  try{ return await cur.getFileHandle(parts[parts.length-1]); }
+  catch(e){ return null; }
 }
 
 async function playSong(id){
   const s = state.library.get(id);
   if(!s) return;
   const file = await fileForSong(s);
-  if(!file){ toastDone('Can’t open this file', false, true); return; }
+  if(!file){
+    console.warn('[Reel] cannot open song:', {id, path:s.path, hasHandle:!!s.handle, hasFile:!!s.file, hasDirHandle:!!state.dirHandle});
+    // If we have a folder but no permission, prompt the user to reconnect it.
+    if(state.dirHandle){
+      toastDone('Tap the Reconnect banner to grant folder access', false, true);
+      showResumeBanner();
+    }else{
+      toastDone('Can’t open this file — try re-importing', false, true);
+    }
+    return;
+  }
   if(currentObjectUrl){ try{ URL.revokeObjectURL(currentObjectUrl); }catch(e){} }
   currentObjectUrl = URL.createObjectURL(file);
   audio.src = currentObjectUrl;
@@ -2443,7 +2520,9 @@ async function boot(){
           await scanAndImportFolder(loadedCount===0);   // only show scan toast if nothing was pre-loaded
           startAutoRescan();
         }else{
-          if(loadedCount===0) showResumeBanner();
+          // whether or not songs are already visible from persistence, the
+          // user needs to reconnect the folder to play them.
+          showResumeBanner();
         }
       }
     }catch(e){ console.warn('resume failed', e); }

@@ -76,70 +76,70 @@
 
   /* ---------- Header ---------- */
   header{
-    padding:18px 20px 12px;
-    display:flex;flex-direction:column;gap:14px;
+    padding:24px 22px 16px;
+    display:flex;flex-direction:column;gap:18px;
     background:linear-gradient(var(--bg), var(--bg-2));
     border-bottom:1px solid var(--line);
     z-index:5;
   }
-  .brand{display:flex;align-items:center;justify-content:space-between;gap:12px;}
+  .brand{display:flex;align-items:center;justify-content:space-between;gap:14px;}
   .brand h1{
-    margin:0;font-size:28px;font-weight:800;letter-spacing:-.02em;
-    display:flex;align-items:center;gap:10px;
+    margin:0;font-size:34px;font-weight:800;letter-spacing:-.02em;
+    display:flex;align-items:center;gap:12px;
   }
   .brand h1 .dot{
-    width:12px;height:12px;border-radius:50%;background:var(--amber);
-    box-shadow:0 0 14px 2px var(--amber);flex:0 0 auto;
+    width:14px;height:14px;border-radius:50%;background:var(--amber);
+    box-shadow:0 0 16px 2px var(--amber);flex:0 0 auto;
   }
-  .view-title{font-size:14px;color:var(--muted);font-weight:600;letter-spacing:.02em;}
-  .hdr-actions{display:flex;gap:10px;align-items:center;}
+  .view-title{font-size:15px;color:var(--muted);font-weight:600;letter-spacing:.02em;}
+  .hdr-actions{display:flex;gap:12px;align-items:center;}
   .icon-btn{
-    width:52px;height:52px;border-radius:14px;display:grid;place-items:center;
+    width:62px;height:62px;border-radius:16px;display:grid;place-items:center;
     background:var(--surface);border:1px solid var(--line);color:var(--text);
     transition:transform .12s ease, background .12s ease;
   }
   .icon-btn:active{transform:scale(.92);background:var(--surface-2);}
-  .icon-btn svg{width:24px;height:24px;}
+  .icon-btn svg{width:28px;height:28px;}
 
   /* Search */
   .search{
-    display:flex;align-items:center;gap:12px;
+    display:flex;align-items:center;gap:14px;
     background:var(--surface);border:1px solid var(--line);
-    border-radius:15px;padding:0 16px;height:56px;
+    border-radius:18px;padding:0 20px;height:68px;
     transition:border-color .15s ease;
   }
   .search:focus-within{border-color:var(--amber);}
-  .search svg{width:22px;height:22px;color:var(--muted);flex:0 0 auto;}
+  .search svg{width:26px;height:26px;color:var(--muted);flex:0 0 auto;}
   .search input{
     flex:1;background:none;border:none;outline:none;color:var(--text);
-    font-size:18px;min-width:0;
+    font-size:20px;min-width:0;
   }
   .search input::placeholder{color:var(--muted-2);}
-  .search .clear{color:var(--muted);width:34px;height:34px;border-radius:10px;display:none;place-items:center;font-size:22px;}
+  .search .clear{color:var(--muted);width:40px;height:40px;border-radius:12px;display:none;place-items:center;font-size:26px;}
   .search.has-text .clear{display:grid;}
 
   /* Segmented sort control */
-  .segbar{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px;}
+  .segbar{display:flex;gap:10px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px;}
   .segbar::-webkit-scrollbar{display:none;}
   .seg{
-    flex:0 0 auto;font-size:15px;font-weight:600;color:var(--muted);
-    padding:10px 18px;border-radius:999px;border:1px solid var(--line);
+    flex:0 0 auto;font-size:17px;font-weight:600;color:var(--muted);
+    padding:14px 22px;border-radius:999px;border:1px solid var(--line);
     background:var(--surface);transition:all .12s ease;white-space:nowrap;
-    min-height:42px;
+    min-height:54px;
   }
   .seg.active{color:#05140b;background:var(--amber);border-color:var(--amber);}
 
   /* Play-Random button (Songs view) */
   .play-random{
-    display:flex;align-items:center;justify-content:center;gap:12px;
-    margin:14px 16px 8px;height:64px;border-radius:16px;
+    display:flex;align-items:center;justify-content:center;gap:14px;
+    margin:18px 16px 10px;height:96px;border-radius:22px;
     background:linear-gradient(135deg,var(--amber),var(--amber-deep));
-    color:#05140b;font-weight:800;font-size:18px;letter-spacing:-.01em;
-    box-shadow:0 8px 26px rgba(var(--accent-rgb),.35), 0 0 22px rgba(var(--accent-rgb),.22);
+    color:#05140b;font-weight:800;font-size:22px;letter-spacing:-.01em;
+    box-shadow:0 10px 32px rgba(var(--accent-rgb),.4), 0 0 26px rgba(var(--accent-rgb),.25);
     transition:transform .12s ease;
   }
   .play-random:active{transform:scale(.97);}
-  .play-random svg{width:26px;height:26px;}
+  .play-random svg{width:32px;height:32px;}
 
   /* ---------- Main / views ---------- */
   main{flex:1;position:relative;min-height:0;}
@@ -151,7 +151,7 @@
   .vlist{
     position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;
     -webkit-overflow-scrolling:touch;overscroll-behavior:contain;
-    padding-bottom:calc(var(--nav-h) + var(--mini-h) + var(--safe-b) + 12px);
+    padding-bottom:calc(var(--nav-h) + var(--mini-h) + 12px);
   }
   .vlist-inner{position:relative;width:100%;}
   .vlist-content{position:absolute;top:0;left:0;right:0;}
@@ -199,7 +199,7 @@
 
   /* A–Z fast-scroll rail */
   .az{
-    position:absolute;right:4px;top:8px;bottom:calc(var(--nav-h) + var(--mini-h) + var(--safe-b) + 18px);
+    position:absolute;right:4px;top:8px;bottom:calc(var(--nav-h) + var(--mini-h) + 18px);
     width:32px;display:flex;flex-direction:column;justify-content:center;align-items:center;
     gap:0;z-index:4;user-select:none;touch-action:none;
   }
@@ -220,7 +220,7 @@
   /* Albums grid */
   .grid{
     display:grid;grid-template-columns:repeat(2,1fr);gap:18px;padding:18px;
-    padding-bottom:calc(var(--nav-h) + var(--mini-h) + var(--safe-b) + 16px);
+    padding-bottom:calc(var(--nav-h) + var(--mini-h) + 16px);
   }
   @media(min-width:520px){.grid{grid-template-columns:repeat(3,1fr);}}
   @media(min-width:760px){.grid{grid-template-columns:repeat(4,1fr);}}
@@ -311,7 +311,7 @@
 
   /* ---------- Mini player ---------- */
   .mini{
-    position:absolute;left:8px;right:8px;bottom:calc(var(--nav-h) + var(--safe-b) + 6px);
+    position:absolute;left:8px;right:8px;bottom:calc(var(--nav-h) + 6px);
     height:var(--mini-h);background:rgba(16,16,20,.94);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
     border:1px solid var(--line-2);border-radius:18px;display:none;align-items:center;gap:14px;padding:10px 12px 10px 10px;
     z-index:20;box-shadow:0 10px 34px rgba(0,0,0,.4);
@@ -333,8 +333,7 @@
 
   /* ---------- Bottom nav ---------- */
   nav{
-    position:absolute;left:0;right:0;bottom:0;height:calc(var(--nav-h) + var(--safe-b));
-    padding-bottom:var(--safe-b);
+    position:absolute;left:0;right:0;bottom:0;height:var(--nav-h);
     background:rgba(0,0,0,.94);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
     border-top:1px solid var(--line);display:flex;z-index:25;
   }
@@ -469,7 +468,7 @@
 
   /* Import progress toast */
   .toast{
-    position:fixed;left:50%;bottom:calc(var(--nav-h) + var(--mini-h) + var(--safe-b) + 22px);
+    position:fixed;left:50%;bottom:calc(var(--nav-h) + var(--mini-h) + 22px);
     transform:translateX(-50%) translateY(20px);z-index:80;
     background:var(--surface-2);border:1px solid var(--line-2);border-radius:16px;
     padding:14px 18px;min-width:260px;max-width:90vw;box-shadow:0 12px 40px rgba(0,0,0,.5);
@@ -896,8 +895,14 @@ const state = {
   eqGains: [0,0,0,0,0,0],  // dB per band
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '1.5.1';
+const APP_VERSION = '1.5.2';
 const CHANGELOG = [
+  { v:'1.5.2', date:'Jul 31, 2026', items:[
+    'Removed the empty gray strip at the bottom of the screen (safe-area padding on the nav bar). Nav buttons now sit flush with the bottom of the app.',
+    'Play Random button significantly bigger — 96px tall, larger icon, larger label.',
+    'Reconnect banner removed entirely: folder permission is requested on the play tap itself, so the banner just added clutter.',
+    'Header controls scaled up: brand title 34px, ⚙️ and 🔄 buttons 62px, search bar 68px with 20px input, sort pills (Title/Artist/Album/Recent) 17px text at 54px height. Song list gets proportionally less vertical space, as requested.',
+  ]},
   { v:'1.5.1', date:'Jul 31, 2026', items:[
     'Folder access is now requested once per session on the root folder, not per file — so you stop seeing the "Allow this site to view and copy files?" prompt on every song.',
     'Fixed the full-screen player failing to open on the very first song of a session (it used to only open from the second tap onward).',
@@ -1794,10 +1799,9 @@ async function playSong(id){
   const file = await fileForSong(s);
   if(!file){
     console.warn('[Reel] cannot open song:', {id, path:s.path, hasHandle:!!s.handle, hasFile:!!s.file, hasDirHandle:!!state.dirHandle});
-    // If we have a folder but no permission, prompt the user to reconnect it.
+    // If we have a folder but the user denied permission, prompt to retry.
     if(state.dirHandle){
-      toastDone('Tap the Reconnect banner to grant folder access', false, true);
-      showResumeBanner();
+      toastDone('Folder access denied — tap the song again to allow', false, true);
     }else{
       toastDone('Can’t open this file — try re-importing', false, true);
     }
@@ -2210,21 +2214,12 @@ function toastDone(msg, isEmpty, isWarn){
 }
 
 /* ============================================================================
-   Banner (resume folder)
+   Banner (removed): the reconnect banner used to appear when folder
+   permission wasn't granted. Since v1.5.1 permission is requested lazily
+   on the play tap itself, so the banner is unnecessary noise.
 ============================================================================ */
-function showResumeBanner(){
-  $('songsBanner').innerHTML =
-    '<div class="banner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>'
-    + '<div class="bm">Reconnect your music folder to load and auto-import new songs.</div>'
-    + '<button id="resumeBtn">Reconnect</button></div>';
-  $('resumeBtn').addEventListener('click', async ()=>{
-    try{
-      const perm = await state.dirHandle.requestPermission({mode:'read'});
-      if(perm==='granted'){ clearBanner(); state.usingFolder=true; await scanAndImportFolder(true); startAutoRescan(); }
-    }catch(e){ console.warn(e); }
-  });
-}
-function clearBanner(){ $('songsBanner').innerHTML=''; }
+function showResumeBanner(){ /* no-op */ }
+function clearBanner(){ const el=$('songsBanner'); if(el) el.innerHTML=''; }
 
 /* ============================================================================
    Auto rescan (folder mode)

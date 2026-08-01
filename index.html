@@ -348,10 +348,27 @@
   .player{
     position:fixed;inset:0;z-index:60;background:var(--bg);
     display:flex;flex-direction:column;
-    transform:translateY(100%);transition:transform .32s cubic-bezier(.32,.72,0,1);
+    /* the extra +60px margin (beyond the element's own 100% height) is a
+       deliberate safety buffer: on some Android/Chrome builds the visual
+       viewport height briefly reports a stale value right after the app
+       returns from the background, which can leave a translateY(100%)
+       element short of fully off-screen — visible as a sliver peeking up
+       over the bottom nav. Pushing well past 100% guarantees full clearance
+       regardless of that timing glitch. visibility:hidden + pointer-events:
+       none give a second layer of protection: even if a stray pixel were
+       visible, the closed player can never be seen or intercept taps.
+       The visibility change is delayed until the slide-down animation
+       finishes, so the close animation still plays normally. */
+    transform:translateY(calc(100% + 60px));
+    transition:transform .32s cubic-bezier(.32,.72,0,1), visibility 0s linear .32s;
     padding:calc(var(--safe-t) + 8px) 24px calc(var(--safe-b) + 22px);
+    pointer-events:none;visibility:hidden;
   }
-  .player.open{transform:translateY(0);}
+  .player.open{
+    transform:translateY(0);
+    transition:transform .32s cubic-bezier(.32,.72,0,1), visibility 0s linear 0s;
+    pointer-events:auto;visibility:visible;
+  }
   .player-bg{position:absolute;inset:0;overflow:hidden;z-index:0;}
   .player-bg img{position:absolute;inset:-40%;width:180%;height:180%;object-fit:cover;filter:blur(60px) saturate(1.2) brightness(.5);opacity:.55;}
   .player-bg::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.35),var(--bg) 78%);}
@@ -438,10 +455,16 @@
   .sheet{
     position:fixed;left:0;right:0;bottom:0;z-index:71;background:var(--bg-2);
     border-radius:24px 24px 0 0;border-top:1px solid var(--line-2);
-    transform:translateY(110%);transition:transform .28s cubic-bezier(.32,.72,0,1);
+    transform:translateY(calc(100% + 40px));
+    transition:transform .28s cubic-bezier(.32,.72,0,1), visibility 0s linear .28s;
     padding:12px 0 calc(var(--safe-b) + 16px);max-height:80vh;display:flex;flex-direction:column;
+    pointer-events:none;visibility:hidden;
   }
-  .sheet.show{transform:translateY(0);}
+  .sheet.show{
+    transform:translateY(0);
+    transition:transform .28s cubic-bezier(.32,.72,0,1), visibility 0s linear 0s;
+    pointer-events:auto;visibility:visible;
+  }
   .sheet-grab{width:46px;height:6px;border-radius:3px;background:var(--line-2);margin:8px auto 10px;flex:0 0 auto;}
   .sheet-title{padding:8px 24px 14px;font-size:20px;font-weight:800;letter-spacing:-.01em;}
   .sheet-sub{padding:0 24px 14px;font-size:14.5px;color:var(--muted);margin-top:-8px;}
@@ -900,8 +923,12 @@ const state = {
   eqGains: [0,0,0,0,0,0],  // dB per band
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.8.0';
 const CHANGELOG = [
+  { v:'1.8.0', date:'Aug 1, 2026', items:[
+    'Fixed the gray bar covering the bottom nav buttons: it was the full-screen player\'s closed state not being pushed fully off-screen on some devices, leaving its top edge (grab handle included) peeking up over Songs/Playlists. The closed player is now given extra clearance and is fully hidden and non-interactive until opened, so no sliver can ever show or block taps. Bottom sheets (song menu, add-to-playlist, etc.) got the same fix.',
+    'Fixed music pausing specifically when returning to the app (not when backgrounding it — that direction was already fine). Reel now tracks whether a pause was actually requested by the user; any pause the app didn\'t ask for — including ones the OS triggers silently when you switch back — is detected and playback resumes automatically within moments. The only thing that stops playback now is you tapping pause.',
+  ]},
   { v:'1.7.0', date:'Aug 1, 2026', items:[
     'Now Playing screen: title, artist, and album are shown as three separate, much larger lines (title 36px, artist 24px in accent colour, album 19px) right below the artwork and above the controls.',
     'Fixed Play Random always starting on the same song — it was pinning song #1 as a fixed "anchor" before shuffling the rest. Every tap now fully randomizes the whole library, including which song plays first.',
@@ -1961,7 +1988,7 @@ function playContext(ids, startIndex){
   else playQueueAt(startIndex);
 }
 function nextTrack(auto){
-  if(auto && sleepEndOfTrack){ audio.pause(); clearSleep(); if(state.view==='settings') renderSettings(); return; }
+  if(auto && sleepEndOfTrack){ requestPause(); clearSleep(); if(state.view==='settings') renderSettings(); return; }
   if(state.queue.length===0) return;
   if(state.repeat==='one' && auto){ audio.currentTime=0; audio.play(); return; }
   if(state.shuffle){
@@ -1999,13 +2026,47 @@ function togglePlay(){
     return;
   }
   if(audio.paused){ audio.play(); state.playing=true; }
-  else { audio.pause(); state.playing=false; }
+  else { requestPause(); }
   updatePlayButtons();
 }
 
 audio.addEventListener('ended', ()=>nextTrack(true));
+/* ============================================================================
+   Pause intent tracking.
+   Android/Chrome can silently call .pause() on the <audio> element for
+   reasons outside our control (audio focus renegotiation when switching
+   back into the app, backgrounding quirks, etc.) — this was the cause of
+   playback stopping specifically when RETURNING to the app. The fix is to
+   distinguish "we asked for this pause" from "something else paused it":
+   any of OUR code that wants to pause goes through requestPause(), which
+   flags the very next 'pause' event as intentional. If a 'pause' event
+   fires WITHOUT that flag set, nothing in Reel asked for it — so we treat
+   it as unintended and resume immediately. The only thing that should ever
+   stop playback is the user tapping pause (directly or via lock-screen/
+   media-notification controls, both of which route through requestPause).
+============================================================================ */
+let intentionalPause = false;
+function requestPause(){
+  intentionalPause = true;
+  try{ audio.pause(); }catch(e){}
+}
+
 audio.addEventListener('play', ()=>{ state.playing=true; updatePlayButtons(); $('player').classList.remove('paused'); });
-audio.addEventListener('pause', ()=>{ state.playing=false; updatePlayButtons(); $('player').classList.add('paused'); });
+audio.addEventListener('pause', ()=>{
+  if(intentionalPause){
+    intentionalPause = false;
+    state.playing = false;
+    updatePlayButtons();
+    $('player').classList.add('paused');
+  }else{
+    // Nothing in Reel asked for this pause — resume immediately.
+    audio.play().catch(()=>{
+      // Genuine failure to resume (e.g. source became invalid) — reflect
+      // the real state instead of silently doing nothing.
+      state.playing=false; updatePlayButtons(); $('player').classList.add('paused');
+    });
+  }
+});
 audio.addEventListener('timeupdate', updateProgress);
 audio.addEventListener('loadedmetadata', ()=>{
   const s = state.library.get(state.currentId);
@@ -2081,7 +2142,7 @@ function updateMediaSession(s){
     if(url) meta.artwork = [{src:url, sizes:'512x512', type:'image/jpeg'}];
     navigator.mediaSession.metadata = new MediaMetadata(meta);
     navigator.mediaSession.setActionHandler('play', ()=>{ audio.play(); });
-    navigator.mediaSession.setActionHandler('pause', ()=>{ audio.pause(); });
+    navigator.mediaSession.setActionHandler('pause', ()=>{ requestPause(); });
     navigator.mediaSession.setActionHandler('previoustrack', ()=>prevTrack());
     navigator.mediaSession.setActionHandler('nexttrack', ()=>nextTrack(false));
     navigator.mediaSession.setActionHandler('seekto', (d)=>{ if(d.seekTime!=null) audio.currentTime=d.seekTime; });
@@ -2788,15 +2849,24 @@ function primeFolderPermission(){
   document.addEventListener('pointerdown', prime, {capture:true, once:true});
 }
 
-document.addEventListener('visibilitychange', ()=>{
-  if(document.hidden) return;
-  // Safety net: if the OS/browser silently paused the <audio> element while
-  // the app was backgrounded (some Android/Chrome builds do this even though
-  // our own code never calls pause() here), resume it automatically. The
-  // ONLY thing that should ever pause playback is the user tapping pause.
-  if(state.playing && audio.paused && audio.src){
-    audio.play().catch(()=>{ /* if this fails, the user's next tap will still start it */ });
-  }
+function onAppForeground(){
+  // Safety net: with requestPause()/intentionalPause now tracking real user
+  // intent, the native 'pause' event listener already catches and reverses
+  // most unintended pauses instantly. This function is a second layer of
+  // insurance for the specific case of returning to the app — it re-checks
+  // a few times over the following seconds, since some Android/Chrome
+  // builds pause audio focus asynchronously a moment AFTER the page
+  // reports itself visible again, which a single immediate check could miss.
+  const tryResume = ()=>{
+    if(state.playing && audio.paused && audio.src && !intentionalPause){
+      audio.play().catch(()=>{ /* next tap will still start it */ });
+    }
+  };
+  tryResume();
+  setTimeout(tryResume, 250);
+  setTimeout(tryResume, 800);
+  setTimeout(tryResume, 2000);
+
   // Never trigger a folder rescan while a song is actively playing. Walking
   // the whole folder tree and re-reading every file is heavy work; doing it
   // right at the moment the app comes back to the foreground was causing
@@ -2805,7 +2875,12 @@ document.addEventListener('visibilitychange', ()=>{
   if(state.usingFolder && state.dirHandle && !state.playing){
     state.dirHandle.queryPermission({mode:'read'}).then(p=>{ if(p==='granted') scanAndImportFolder(false); }).catch(()=>{});
   }
-});
+}
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) onAppForeground(); });
+// 'pageshow' fires when the page is restored from the back-forward cache or
+// otherwise resumed — belt-and-suspenders alongside visibilitychange, since
+// not every Android/Chrome app-switch path is guaranteed to fire both.
+window.addEventListener('pageshow', onAppForeground);
 
 /* ============================================================================
    Quality-of-life features: favourites, recent, smart lists, settings,
@@ -2908,7 +2983,7 @@ function setSleep(min){
   if(chip) chip.classList.remove('hidden');
   updateSleepChip();
   sleepInterval = setInterval(()=>{
-    if(sleepDeadline - Date.now() <= 0){ try{ audio.pause(); }catch(e){} clearSleep(); if(state.view==='settings') renderSettings(); return; }
+    if(sleepDeadline - Date.now() <= 0){ requestPause(); clearSleep(); if(state.view==='settings') renderSettings(); return; }
     updateSleepChip();
   }, 1000);
 }

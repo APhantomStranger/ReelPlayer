@@ -286,7 +286,7 @@
   .detail-eyebrow{font-size:15px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--amber);}
   .detail-name{font-size:32px;font-weight:800;letter-spacing:-.02em;margin:8px 0 9px;line-height:1.15;word-break:break-word;}
   .detail-info{font-size:18px;color:var(--muted);}
-  .detail-play-row{display:flex;gap:14px;padding:0 20px 18px;}
+  .detail-play-row{display:flex;flex-wrap:wrap;gap:14px;padding:0 20px 18px;}
   .detail-play-row .btn-primary{flex:1;}
   .detail-play-row .btn-ghost{width:auto;padding:0 26px;flex:0 0 auto;}
 
@@ -654,6 +654,130 @@
     nav button{gap:3px;font-size:11px;}
     nav button svg{width:24px;height:24px;}
   }
+  /* ================= Audiobooks ================= */
+  .books-scroll{overflow-y:auto;height:100%;padding-bottom:calc(var(--nav-h) + var(--mini-h) + 20px);}
+  .books-actions{padding:16px 16px 8px;}
+  .book-row{display:flex;align-items:center;gap:18px;padding:16px 20px;width:100%;text-align:left;}
+  .book-row:active{background:var(--surface);}
+  .book-cover{width:96px;height:96px;border-radius:14px;flex:0 0 auto;overflow:hidden;background:linear-gradient(145deg,var(--surface-3),var(--surface));display:grid;place-items:center;border:1px solid var(--line);position:relative;}
+  .book-cover img{width:100%;height:100%;object-fit:cover;}
+  .book-cover svg{width:40px;height:40px;color:var(--muted-2);}
+  .book-cover .badge{position:absolute;inset:auto 4px 4px auto;background:var(--amber);color:#05140b;font-size:12px;font-weight:800;padding:2px 8px;border-radius:8px;font-family:var(--mono);}
+  .book-main{flex:1;min-width:0;}
+  .book-title{font-size:22px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .book-author{font-size:17px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .book-meta{font-size:15px;color:var(--amber);margin-top:6px;font-weight:600;}
+  .book-prog{height:8px;border-radius:5px;background:var(--surface-3);margin-top:10px;overflow:hidden;}
+  .book-prog span{display:block;height:100%;background:var(--amber);border-radius:5px;}
+  .book-sep{border-bottom:1px solid var(--line);margin-left:134px;}
+
+  /* Audiobook player overlay */
+  .bplayer{
+    position:fixed;inset:0;z-index:62;background:var(--bg);
+    display:flex;flex-direction:column;
+    transform:translateY(calc(100% + 60px));
+    transition:transform .32s cubic-bezier(.32,.72,0,1), visibility 0s linear .32s;
+    padding:calc(var(--safe-t) + 8px) 24px calc(var(--safe-b) + 22px);
+    pointer-events:none;visibility:hidden;
+  }
+  .bplayer.open{transform:translateY(0);transition:transform .32s cubic-bezier(.32,.72,0,1), visibility 0s linear 0s;pointer-events:auto;visibility:visible;}
+  .bplayer-bg{position:absolute;inset:0;overflow:hidden;z-index:0;}
+  .bplayer-bg img{position:absolute;inset:-40%;width:180%;height:180%;object-fit:cover;filter:blur(60px) saturate(1.2) brightness(.5);opacity:.5;}
+  .bplayer-bg::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.4),var(--bg) 78%);}
+  .bplayer>*{position:relative;z-index:1;}
+  .bplayer-top{display:flex;align-items:center;justify-content:space-between;padding:4px 0 0;gap:10px;}
+  .bplayer-top .grab{position:absolute;left:50%;top:2px;transform:translateX(-50%);width:38px;height:5px;border-radius:3px;background:var(--line-2);}
+  .bplayer-back{height:56px;padding:0 18px 0 14px;display:flex;align-items:center;gap:8px;color:var(--amber);font-weight:700;font-size:17px;border-radius:16px;}
+  .bplayer-back:active{background:var(--surface-2);}
+  .bplayer-back svg{width:26px;height:26px;}
+  .bplayer-chapbtn{height:56px;padding:0 20px;display:flex;align-items:center;gap:8px;color:var(--text);font-weight:600;font-size:16px;border-radius:16px;background:var(--surface);border:1px solid var(--line);}
+  .bplayer-chapbtn:active{background:var(--surface-2);}
+  .bplayer-chapbtn svg{width:22px;height:22px;}
+
+  .bcover-wrap{flex:0 0 auto;display:flex;align-items:center;justify-content:center;padding:16px 0 10px;height:min(40vh,42vw + 60px);}
+  .bcover{width:min(72vw,40vh);height:min(72vw,40vh);border-radius:20px;overflow:hidden;background:linear-gradient(145deg,var(--surface-3),var(--surface));display:grid;place-items:center;box-shadow:0 26px 70px rgba(0,0,0,.55);border:1px solid var(--line-2);}
+  .bcover img{width:100%;height:100%;object-fit:cover;}
+  .bcover svg{width:88px;height:88px;color:var(--muted-2);}
+
+  .bplayer-controls{flex:1 1 auto;display:flex;flex-direction:column;justify-content:space-between;min-height:0;gap:8px;padding-top:8px;}
+  .bplayer-info{text-align:center;}
+  .bplayer-title{font-size:30px;font-weight:800;letter-spacing:-.02em;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .bplayer-author{font-size:20px;font-weight:600;color:var(--amber);margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .bplayer-chapter{font-size:16px;color:var(--muted);margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+  .bseek{margin:2px 0;}
+  .bseek-track{height:12px;border-radius:6px;background:var(--surface-3);position:relative;cursor:pointer;}
+  .bseek-fill{position:absolute;left:0;top:0;bottom:0;background:var(--amber);border-radius:6px;width:0%;}
+  .bseek-knob{position:absolute;top:50%;width:26px;height:26px;border-radius:50%;background:#fff;transform:translate(-50%,-50%);left:0%;box-shadow:0 3px 10px rgba(0,0,0,.45);}
+  .bseek-times{display:flex;justify-content:space-between;margin-top:10px;font-family:var(--mono);font-size:16px;color:var(--muted);font-variant-numeric:tabular-nums;}
+  .bseek-remain{text-align:center;font-size:15px;color:var(--muted-2);margin-top:4px;}
+
+  .btransport{display:flex;align-items:center;justify-content:space-between;gap:6px;margin:6px 0;}
+  .btransport button{display:grid;place-items:center;color:var(--text);position:relative;}
+  .bskip{width:92px;height:92px;border-radius:24px;color:var(--text);}
+  .bskip:active{background:var(--surface-2);}
+  .bskip svg{width:52px;height:52px;}
+  .bskip .num{position:absolute;left:0;right:0;top:50%;transform:translateY(-38%);font-size:15px;font-weight:800;font-family:var(--mono);}
+  .bchap{width:72px;height:72px;border-radius:20px;color:var(--muted);}
+  .bchap:active{background:var(--surface-2);}
+  .bchap svg{width:36px;height:36px;}
+  .bchap.disabled{opacity:.3;pointer-events:none;}
+  .bplay{width:128px;height:128px;border-radius:50%;background:var(--amber);color:#05140b;box-shadow:0 14px 40px rgba(var(--accent-rgb),.45), 0 0 30px rgba(var(--accent-rgb),.25);}
+  .bplay:active{transform:scale(.95);}
+  .bplay svg{width:62px;height:62px;}
+
+  .bplayer-extra{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:2px;}
+  .bchip{display:flex;align-items:center;gap:8px;height:56px;padding:0 20px;border-radius:16px;background:var(--surface);border:1px solid var(--line);color:var(--text);font-weight:700;font-size:17px;}
+  .bchip:active{background:var(--surface-2);}
+  .bchip.on{color:var(--amber);border-color:rgba(var(--accent-rgb),.4);}
+  .bchip svg{width:22px;height:22px;}
+
+  /* ================= Debug Log ================= */
+  .log-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap;}
+  .log-count{font-size:15px;color:var(--muted);font-family:var(--mono);}
+  .log-btns{display:flex;gap:10px;}
+  .log-btns .btn-ghost{width:auto;height:52px;padding:0 18px;font-size:15px;gap:8px;}
+  .log-btns .btn-ghost svg{width:20px;height:20px;}
+  .log-scroll{overflow-y:auto;height:100%;padding:8px 0 calc(var(--nav-h) + 40px);}
+  .log-line{display:flex;gap:12px;padding:9px 20px;font-family:var(--mono);font-size:13.5px;line-height:1.5;border-bottom:1px solid rgba(255,255,255,.04);}
+  .log-line .lt{color:var(--muted-2);flex:0 0 auto;white-space:nowrap;}
+  .log-line .lm{flex:1;min-width:0;word-break:break-word;color:var(--text);}
+  .log-line.warn .lm{color:var(--amber);}
+  .log-line.error .lm{color:var(--danger);}
+  .log-empty{padding:60px 30px;text-align:center;color:var(--muted);font-size:16px;line-height:1.6;}
+
+  /* ================= Bulk add songs to playlist ================= */
+  .bulkadd{
+    position:fixed;inset:0;z-index:66;background:var(--bg);
+    display:flex;flex-direction:column;
+    transform:translateY(calc(100% + 60px));
+    transition:transform .3s cubic-bezier(.32,.72,0,1), visibility 0s linear .3s;
+    padding-top:calc(var(--safe-t) + 10px);
+    pointer-events:none;visibility:hidden;
+  }
+  .bulkadd.open{
+    transform:translateY(0);
+    transition:transform .3s cubic-bezier(.32,.72,0,1), visibility 0s linear 0s;
+    pointer-events:auto;visibility:visible;
+  }
+  .bulkadd-top{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 20px 14px;}
+  .bulkadd-done{height:56px;padding:0 18px 0 12px;display:flex;align-items:center;gap:8px;color:var(--amber);font-weight:700;font-size:19px;border-radius:16px;flex:0 0 auto;}
+  .bulkadd-done:active{background:var(--surface-2);}
+  .bulkadd-done svg{width:26px;height:26px;}
+  .bulkadd-title{font-size:19px;font-weight:700;text-align:center;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .bulkadd-count{font-size:16px;color:var(--amber);font-weight:700;font-family:var(--mono);flex:0 0 auto;min-width:64px;text-align:right;}
+  .bulk-check{width:40px;height:40px;border-radius:50%;border:2.5px solid var(--line-2);display:grid;place-items:center;flex:0 0 auto;color:transparent;transition:background .12s,border-color .12s;}
+  .bulk-check svg{width:22px;height:22px;}
+  .bulkrow.checked .bulk-check{background:var(--amber);border-color:var(--amber);color:#05140b;}
+
+  /* chapter list reuses .sheet */
+  .chap-item{display:flex;align-items:center;gap:16px;padding:20px 24px;width:100%;text-align:left;min-height:72px;}
+  .chap-item:active{background:var(--surface);}
+  .chap-item.cur{color:var(--amber);}
+  .chap-item .cn{font-family:var(--mono);font-size:16px;color:var(--muted-2);flex:0 0 auto;min-width:34px;}
+  .chap-item.cur .cn{color:var(--amber);}
+  .chap-item .ct{flex:1;min-width:0;font-size:19px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .chap-item .cd{font-family:var(--mono);font-size:15px;color:var(--muted-2);flex:0 0 auto;}
 </style>
 </head>
 <body>
@@ -741,6 +865,12 @@
       </div>
     </section>
 
+    <!-- AUDIOBOOKS -->
+    <section class="view" id="view-books" data-view="books">
+      <div class="back-bar"><button id="booksBack"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg><span>Playlists</span></button></div>
+      <div class="books-scroll" id="booksBody"></div>
+    </section>
+
     <!-- SETTINGS -->
     <section class="view" id="view-settings" data-view="settings">
       <div class="back-bar"><button id="settingsBack"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg><span>Library</span></button></div>
@@ -751,6 +881,20 @@
     <section class="view" id="view-about" data-view="about">
       <div class="back-bar"><button id="aboutBack"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg><span>Settings</span></button></div>
       <div class="settings-scroll" id="aboutBody"></div>
+    </section>
+
+    <!-- DEBUG LOG -->
+    <section class="view" id="view-log" data-view="log">
+      <div class="back-bar"><button id="logBack"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg><span>Settings</span></button></div>
+      <div class="log-toolbar">
+        <div class="log-count" id="logCount">0 entries</div>
+        <div class="log-btns">
+          <button class="btn-ghost" id="logCopy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy</button>
+          <button class="btn-ghost" id="logDownload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Save</button>
+          <button class="btn-ghost" id="logClear"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>Clear</button>
+        </div>
+      </div>
+      <div class="log-scroll" id="logScroll"></div>
     </section>
   </main>
 
@@ -821,6 +965,57 @@
   </div>
 </div>
 
+<!-- AUDIOBOOK PLAYER -->
+<div class="bplayer" id="bookPlayer">
+  <div class="bplayer-bg" id="bpBg"></div>
+  <div class="bplayer-top">
+    <div class="grab"></div>
+    <button class="bplayer-back" id="bpBack" aria-label="Back to audiobooks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg><span>Books</span></button>
+    <button class="bplayer-chapbtn" id="bpChapters"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg><span id="bpChapCount">Chapters</span></button>
+  </div>
+  <div class="bcover-wrap">
+    <div class="bcover" id="bpCover"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div>
+  </div>
+  <div class="bplayer-controls">
+    <div class="bplayer-info">
+      <div class="bplayer-title" id="bpTitle">—</div>
+      <div class="bplayer-author" id="bpAuthor">—</div>
+      <div class="bplayer-chapter" id="bpChapter"></div>
+    </div>
+    <div class="bseek">
+      <div class="bseek-track" id="bpSeekTrack"><div class="bseek-fill" id="bpSeekFill"></div><div class="bseek-knob" id="bpSeekKnob"></div></div>
+      <div class="bseek-times"><span id="bpCur">0:00</span><span id="bpDur">0:00</span></div>
+      <div class="bseek-remain" id="bpRemain"></div>
+    </div>
+    <div class="btransport">
+      <button class="bchap" id="bpPrevChap" aria-label="Previous chapter"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zM9.5 12l8.5 6V6z"/></svg></button>
+      <button class="bskip" id="bpBack30" aria-label="Back 30 seconds"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4 6 9l5 5"/><path d="M6 9h9a6 6 0 1 1 0 12H9"/></svg><span class="num">30</span></button>
+      <button class="bplay" id="bpPlay" aria-label="Play"><svg id="bpPlayIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
+      <button class="bskip" id="bpFwd30" aria-label="Forward 30 seconds"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m13 4 5 5-5 5"/><path d="M18 9H9a6 6 0 1 0 0 12h6"/></svg><span class="num">30</span></button>
+      <button class="bchap" id="bpNextChap" aria-label="Next chapter"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
+    </div>
+    <div class="bplayer-extra">
+      <button class="bchip" id="bpSpeed"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 8 12 12 15 13"/></svg><span id="bpSpeedTxt">1.0×</span></button>
+      <button class="bchip" id="bpSleep"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2"/><path d="M5 3 2 6"/><path d="m22 6-3-3"/></svg><span id="bpSleepTxt">Sleep</span></button>
+    </div>
+  </div>
+</div>
+
+<!-- BULK ADD SONGS TO PLAYLIST -->
+<div class="bulkadd" id="bulkAdd">
+  <div class="bulkadd-top">
+    <button class="bulkadd-done" id="bulkAddDone" aria-label="Done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg><span>Done</span></button>
+    <div class="bulkadd-title" id="bulkAddTitle">Add songs</div>
+    <div class="bulkadd-count" id="bulkAddCount"></div>
+  </div>
+  <div class="search" id="bulkSearchBox" style="margin:0 20px 14px;">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input type="text" id="bulkSearchInput" placeholder="Search your library" autocomplete="off">
+    <button class="clear" id="bulkSearchClear" aria-label="Clear">×</button>
+  </div>
+  <div class="vlist scroll" id="bulkAddList"><div class="vlist-inner"><div class="vlist-content"></div></div></div>
+</div>
+
 <!-- Sheets -->
 <div class="scrim" id="scrim"></div>
 
@@ -853,6 +1048,24 @@
   <div class="sheet-scroll" id="queueItems"></div>
 </div>
 
+<div class="sheet" id="sheetChapters">
+  <div class="sheet-grab"></div>
+  <div class="sheet-title" id="chapTitle">Chapters</div>
+  <div class="sheet-scroll" id="chapItems"></div>
+</div>
+
+<div class="sheet" id="sheetBookSpeed">
+  <div class="sheet-grab"></div>
+  <div class="sheet-title">Playback speed</div>
+  <div class="opts" id="bookSpeedOpts" style="padding:8px 20px 20px;"></div>
+</div>
+
+<div class="sheet" id="sheetBookSleep">
+  <div class="sheet-grab"></div>
+  <div class="sheet-title">Sleep timer</div>
+  <div class="opts" id="bookSleepOpts" style="padding:8px 20px 20px;"></div>
+</div>
+
 <div class="toast" id="toast">
   <div class="tt"><span class="spin" id="toastSpin"></span><span id="toastMsg">Importing…</span></div>
   <div class="bar" id="toastBarWrap"><span id="toastBar"></span></div>
@@ -861,7 +1074,8 @@
 
 <!-- hidden file inputs -->
 <input type="file" id="folderInput" webkitdirectory directory multiple style="display:none">
-<input type="file" id="filesInput" accept="audio/*,.mp3,.wav,.m4a,.mp4,.aac,.ogg,.oga,.opus,.flac,.webm,.m4b,.aif,.aiff,.wma,.mka" multiple style="display:none">
+<input type="file" id="filesInput" accept="audio/*,.mp3,.wav,.m4a,.mp4,.aac,.ogg,.oga,.opus,.flac,.webm,.weba,.m4b,.aif,.aiff,.wma,.3gp,.3g2,.amr,.mka,.caf,.mp2,.mpga,.au,.spx" multiple style="display:none">
+<input type="file" id="booksFolderInput" webkitdirectory directory multiple style="display:none">
 
 <script>
 "use strict";
@@ -873,7 +1087,7 @@
 
 /* ---------- tiny helpers ---------- */
 const $ = (id) => document.getElementById(id);
-const AUDIO_EXTS = ['mp3','wav','m4a','mp4','aac','ogg','oga','opus','flac','webm','m4b','aif','aiff','wma','3gp','amr','mka','caf'];
+const AUDIO_EXTS = ['mp3','wav','m4a','mp4','aac','ogg','oga','opus','flac','webm','weba','m4b','aif','aiff','wma','3gp','3g2','amr','mka','caf','mp2','mpga','au','spx'];
 const IMG_EXTS = ['jpg','jpeg','png','webp','gif','bmp'];
 const hasFSAccess = typeof window.showDirectoryPicker === 'function';
 
@@ -922,10 +1136,48 @@ const state = {
   sleepMin: 0,             // sleep timer minutes (0 = off); -1 = end of track
   eqEnabled: false,
   eqGains: [0,0,0,0,0,0],  // dB per band
+  // ---- audiobooks ----
+  books: new Map(),        // bookId -> book {id,title,author,folder,parts:[],position:{part,time},finished,addedAt,lastPlayedAt}
+  booksOrder: [],          // sorted book ids for the list
+  booksDirHandle: null,    // separate folder handle for audiobooks
+  usingBooksFolder: false,
+  mode: 'music',           // 'music' | 'book' — which content the shared <audio> is playing
+  currentBookId: null,
+  currentPart: 0,          // index into current book's parts
+  bookSpeed: 1,            // audiobooks often want their own faster default speed
+  // ---- bulk add songs to playlist ----
+  bulkAddPlId: null,
+  bulkAddSearch: '',
+  // ---- FFmpeg WASM fallback (for formats the browser can't decode, e.g. WMA) ----
+  ffEngineCached: false,
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '2.2.0';
 const CHANGELOG = [
+  { v:'2.2.0', date:'Aug 2, 2026', items:[
+    'New: automatic format conversion. WMA (and any other file Chrome can\'t decode) now plays — Reel runs a real audio decoder (FFmpeg, compiled to WebAssembly) on your device and converts the file automatically the moment you tap play. No steps to follow, nothing to configure.',
+    'The conversion engine (~32MB) downloads once, the first time it\'s actually needed, and is cached on-device from then on — every future conversion, in every future session, works fully offline. You can also fetch it ahead of time from Settings → Advanced → Format conversion engine while on Wi-Fi.',
+    'Once a song or audiobook chapter has been converted, the result is cached too, so replaying it is instant — it\'s never converted twice.',
+    'This is the one deliberate exception to Reel\'s fully-offline design: downloading the engine needs internet, once. Every other part of Reel remains exactly as offline as before.',
+    'Applies to both the music library and audiobooks, since they share the same playback engine.',
+  ]},
+  { v:'2.1.1', date:'Aug 2, 2026', items:[
+    'Added recognition for more audio formats: weba, mp2, mpga, au, spx, and 3g2 (alongside the existing mp3, wav, m4a/m4b, aac, ogg/oga/opus, flac, webm, aif/aiff, wma, 3gp, amr, mka, caf). All of these now import, show cover art and metadata, and appear in your library and playlists like any other song.',
+    'Playback failures that previously happened silently (a stuck-looking player with no message) now always show a clear "format isn\'t supported" notice and log the exact reason to Settings → Advanced → Debug log — this specifically affects WMA files, since Chrome has never shipped a WMA decoder on any platform and no web app can add one.',
+    'Being upfront: .wma files will now import correctly and show up with their metadata, but they still won\'t play — that part is a hard limitation of the browser itself, not something Reel\'s code can work around. Converting WMA files to mp3 or m4a is the only fix.',
+  ]},
+  { v:'2.1.0', date:'Aug 2, 2026', items:[
+    'New: Debug log. Settings → Advanced → Debug log keeps a running, local-only record of app activity — folder scans, imports, playback, playlist changes, audiobook activity, and any errors — with Copy, Save as .txt, and Clear. Nothing ever leaves your device.',
+    'New: fast playlist building. Creating a playlist now takes you straight into it, where a big "Add songs" button opens your entire library in a scrollable, searchable checklist — tap any number of songs to add them in one pass instead of one at a time.',
+    'Confirmed and preserved: a song can belong to as many playlists as you like at once — adding it to one playlist never removes it from another.',
+  ]},
+  { v:'2.0.0', date:'Aug 2, 2026', items:[
+    'New: Audiobooks. A dedicated Audiobooks entry now sits in the Playlists tab, next to Recently Added.',
+    'Pick a separate folder for your audiobooks (kept apart from your music). Each sub-folder becomes a book with its files as chapters, sorted naturally (Chapter 2 before Chapter 10); a single loose file becomes its own book. All popular formats supported, including mp3, m4a/m4b, aac, ogg/opus, flac and wav.',
+    'Every book remembers exactly where you stopped — chapter and timestamp — and picks up right there. Switching between books keeps each one independently bookmarked. Progress is saved continuously and when the app is closed or backgrounded.',
+    'Audiobook player built for listening: big ±30-second skip buttons, chapter jump and a full chapter list, a scrubbable progress bar with "time left in book", adjustable speed (0.75×–3×, remembered), and a sleep timer including "end of chapter". Lock-screen controls map to ±30s.',
+    'The book list shows cover art (from a folder image or embedded art), author, a progress bar and percent, with finished books marked.',
+  ]},
   { v:'1.9.0', date:'Aug 1, 2026', items:[
     'Fixed "Go to album" and "Go to artist" in the song menu doing nothing when opened from the full-screen player: the album/artist screen was actually loading correctly behind the scenes, but the full-screen player never closed to reveal it. Both now close the player and take you straight to a working album/artist screen with a song list, Play, and Shuffle.',
     'Audited every button and menu in the app for dead ends — everything else checked out and works correctly.',
@@ -1054,6 +1306,65 @@ const DB = (() => {
   }
   return { get, set };
 })();
+
+/* ============================================================================
+   Debug Log
+   A rolling, human-readable log of app activity, warnings, and errors —
+   entirely local, never sent anywhere. Two sources feed it:
+     1) Explicit Log.info/warn/error(...) calls placed at meaningful points
+        (boot, folder scans, imports, playback, playlists, audiobooks).
+     2) An automatic capture: console.warn/console.error are wrapped so the
+        ~30+ existing error-handling call sites throughout the app (which
+        already call console.warn on failures) get logged for free, plus a
+        window 'error' and 'unhandledrejection' listener for anything that
+        slips through uncaught.
+============================================================================ */
+const Log = (()=>{
+  const MAX = 600;
+  let buf = [];
+  let saveTimer = null;
+  function push(level, msg){
+    try{
+      buf.push({ t:Date.now(), level, msg:String(msg) });
+      if(buf.length>MAX) buf.splice(0, buf.length-MAX);
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(()=>{ DB.set('debugLog', buf).catch(()=>{}); }, 1200);
+    }catch(e){/* logging must never itself throw */}
+  }
+  return {
+    info:(msg)=>push('info', msg),
+    warn:(msg)=>push('warn', msg),
+    error:(msg)=>push('error', msg),
+    clear:()=>{ buf=[]; DB.set('debugLog', []).catch(()=>{}); },
+    entries:()=>buf.slice(),
+    count:()=>buf.length,
+    text:()=>buf.map(e=>{
+      const d = new Date(e.t);
+      const ts = d.toTimeString().slice(0,8)+'.'+String(d.getMilliseconds()).padStart(3,'0');
+      return '['+ts+'] '+e.level.toUpperCase().padEnd(5)+' '+e.msg;
+    }).join('\n'),
+    async load(){
+      try{ const saved = await DB.get('debugLog'); if(Array.isArray(saved)) buf = saved.slice(-MAX); }catch(e){}
+    },
+  };
+})();
+function fmtLogArg(a){
+  if(a instanceof Error) return a.message + (a.stack ? ' | '+a.stack.split('\n').slice(0,2).join(' <- ') : '');
+  if(a && typeof a==='object'){ try{ return JSON.stringify(a); }catch(e){ return String(a); } }
+  return String(a);
+}
+(function patchConsole(){
+  const _warn = console.warn.bind(console), _error = console.error.bind(console);
+  console.warn = (...args)=>{ try{ Log.warn(args.map(fmtLogArg).join(' ')); }catch(e){} _warn(...args); };
+  console.error = (...args)=>{ try{ Log.error(args.map(fmtLogArg).join(' ')); }catch(e){} _error(...args); };
+})();
+window.addEventListener('error', (e)=>{
+  Log.error('Uncaught error: '+(e.message||'unknown')+(e.filename?' @ '+e.filename.split('/').pop()+':'+e.lineno:''));
+});
+window.addEventListener('unhandledrejection', (e)=>{
+  const r = e.reason;
+  Log.error('Unhandled promise rejection: '+(r && r.message ? r.message : String(r)));
+});
 
 /* ============================================================================
    Metadata: ID3v2 parser (MP3) + graceful filename fallback
@@ -1275,7 +1586,7 @@ function saveLibrary(){
       });
     }
     DB.set('library', arr).catch(e=>console.warn('saveLibrary failed', e));
-    console.log('[Reel] library persisted:', arr.length, 'songs');
+    Log.info('Library saved to local storage: '+arr.length+' songs');
   }, 500);
 }
 async function loadLibrary(){
@@ -1295,7 +1606,7 @@ async function loadLibrary(){
         addedAt: s.addedAt || Date.now(),
       });
     }
-    console.log('[Reel] library loaded:', arr.length, 'songs');
+    Log.info('Library restored from local storage: '+arr.length+' songs');
     return arr.length;
   }catch(e){ console.warn('loadLibrary failed', e); return 0; }
 }
@@ -1360,10 +1671,11 @@ async function pickFolderFSAccess(){
     const handle = await window.showDirectoryPicker({ id:'reel-music', mode:'read' });
     state.dirHandle = handle;
     state.usingFolder = true;
+    Log.info('User selected music folder: "'+handle.name+'"');
     await DB.set('dirHandle', handle).catch(()=>{});
     await scanAndImportFolder(true);
   }catch(e){
-    if(e && e.name === 'AbortError') return; // user cancelled
+    if(e && e.name === 'AbortError'){ Log.info('Music folder picker cancelled by user'); return; }
     console.warn('folder pick failed', e);
   }
 }
@@ -1382,7 +1694,7 @@ async function scanAndImportFolder(showToast){
     +', '+acc.length+' audio file'+(acc.length===1?'':'s')
     +(guard.skippedDeep? ', '+guard.skippedDeep+' subfolder'+(guard.skippedDeep===1?'':'s')+' past depth '+SCAN_MAX_DEPTH+' skipped':'')
     +(guard.errors? ', '+guard.errors+' errors (see console)':'');
-  console.log('[Reel] '+diag);
+  Log.info(diag);
   if(showToast) toastProgress(1, diag);
   await importFiles(acc);
   clearBanner();
@@ -1404,7 +1716,7 @@ async function handleInputFiles(fileList){
     if(!isAudio(f.name)) continue;
     entries.push({ file:f, path: rel, handle:null });
   }
-  console.log('[Reel] file input: '+scanned+' items across '+folders.size+' folders; '+entries.length+' audio files.');
+  Log.info('File picker: '+scanned+' items across '+folders.size+' folders; '+entries.length+' audio files.');
   if(entries.length===0){
     toastDone('No supported audio found in '+folders.size+' folders', false, true);
     return;
@@ -1643,6 +1955,15 @@ function renderPlaylists(){
       + '<svg class="arow-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>'
       + '</div>';
   }
+  // Audiobooks entry (its own content type + player)
+  const bookI = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>';
+  const bookCount = state.books.size;
+  html += '<div class="plrow" data-act="books">'
+    + '<div class="plrow-art" style="background:linear-gradient(145deg,var(--lime),#5f7a12);">'+bookI+'</div>'
+    + '<div class="plrow-main"><div class="plrow-name">Audiobooks</div>'
+    + '<div class="plrow-sub">'+(bookCount? pluralize(bookCount,'book') : 'Tap to set up')+'</div></div>'
+    + '<svg class="arow-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>'
+    + '</div>';
   html += '<div style="font-size:11.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--muted-2);margin:18px 18px 6px;">Your playlists</div>';
   if(state.playlists.length===0){
     html += '<div style="padding:6px 20px 20px;color:var(--muted);font-size:13.5px;line-height:1.5;">No playlists yet. Tap “New playlist” above, then add songs from the ••• menu on any track.</div>';
@@ -1690,6 +2011,7 @@ function openDetail(type, key){
     + '<div class="detail-play-row">'
     + '<button class="btn-primary" data-act="playall"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>Play</button>'
     + '<button class="btn-ghost" data-act="shuffleall"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>Shuffle</button>'
+    + (canEdit ? '<button class="btn-ghost" data-act="addsongs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add songs</button>' : '')
     + (canEdit ? '<button class="btn-ghost" data-act="pledit"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg></button>' : '')
     + '</div>';
   lazyArt($('detailHeader'));
@@ -1702,6 +2024,12 @@ function renderDetail(){
   if(!detailVList) detailVList = new VList($('detailList'), 112, (id,idx)=>detailRowHTML(id,idx));
   detailVList.renderRow = (id,idx)=>detailRowHTML(id,idx);
   detailVList.setItems(state.detail.songIds, false);
+  if(state.detail.type==='playlist' && state.detail.songIds.length===0){
+    const inner = $('detailList').querySelector('.vlist-inner');
+    const c = $('detailList').querySelector('.vlist-content');
+    if(inner) inner.style.height='auto';
+    if(c) c.innerHTML = '<div style="padding:36px 24px;text-align:center;color:var(--muted);font-size:16px;line-height:1.6;">This playlist is empty. Tap <b style="color:var(--text);">Add songs</b> above to browse your library and start adding tracks.</div>';
+  }
 }
 
 /* ============================================================================
@@ -1962,10 +2290,21 @@ async function playSong(id){
   try{
     await audio.play();
     state.playing = true;
+    Log.info('Playing "'+s.title+'" by '+s.artist);
   }catch(e){
-    // Some codecs (e.g. certain wma/flac) unsupported by this browser
+    // Some codecs (WMA in particular) are unsupported by this browser.
+    // NotSupportedError specifically means the format/codec is the problem
+    // (as opposed to e.g. NotAllowedError from autoplay policy, or
+    // AbortError from a rapid track skip) — that's exactly the case the
+    // FFmpeg WASM fallback can help with, so try it automatically.
     state.playing = false;
-    toastDone('This format isn’t supported here', false, true);
+    const name = e && e.name;
+    Log.warn('Native playback failed for "'+s.title+'" ('+s.path+'): '+(name||e));
+    if(name==='NotSupportedError'){
+      tryTranscodeFallbackMusic(id);
+    }else{
+      toastDone('This format isn’t supported here', false, true);
+    }
   }
   updateNowPlaying();
   updatePlayButtons();
@@ -2028,6 +2367,13 @@ function prevTrack(){
   }
 }
 function togglePlay(){
+  if(state.mode==='book'){
+    if(!state.currentBookId) return;
+    if(audio.paused){ audio.play(); state.playing=true; }
+    else { requestPause(); saveBookProgress(true); }
+    updatePlayButtons();
+    return;
+  }
   if(!state.currentId){
     // start from current filtered list
     const ids = state.view==='detail' && state.detail ? state.detail.songIds : filteredSongIds();
@@ -2039,7 +2385,7 @@ function togglePlay(){
   updatePlayButtons();
 }
 
-audio.addEventListener('ended', ()=>nextTrack(true));
+audio.addEventListener('ended', ()=>{ if(state.mode==='book') bookOnEnded(); else nextTrack(true); });
 /* ============================================================================
    Pause intent tracking.
    Android/Chrome can silently call .pause() on the <audio> element for
@@ -2078,6 +2424,7 @@ audio.addEventListener('pause', ()=>{
 });
 audio.addEventListener('timeupdate', updateProgress);
 audio.addEventListener('loadedmetadata', ()=>{
+  if(state.mode==='book'){ onBookMetadata(); return; }
   const s = state.library.get(state.currentId);
   if(s && audio.duration && isFinite(audio.duration)){
     s.duration = audio.duration;
@@ -2087,11 +2434,38 @@ audio.addEventListener('loadedmetadata', ()=>{
     if(detailVList && state.view==='detail') detailVList.refresh();
   }
 });
+const MEDIA_ERROR_NAMES = {1:'aborted',2:'network error',3:'decode error (unsupported codec)',4:'format not supported by this browser'};
 audio.addEventListener('error', ()=>{
-  if(state.currentId){ /* try skip forward */ }
+  // Some formats (WMA in particular — Chrome has never shipped a WMA
+  // decoder, on Android or anywhere else) can fail to decode without
+  // audio.play() ever rejecting; the failure only shows up here. Error
+  // codes 3 (decode) and 4 (format not supported) are genuine codec
+  // problems — exactly what the FFmpeg WASM fallback can fix automatically.
+  // Codes 1 (aborted) and 2 (network) aren't format issues, so they get a
+  // direct message instead of a pointless conversion attempt.
+  const err = audio.error;
+  const code = err ? err.code : 0;
+  const reason = err ? (MEDIA_ERROR_NAMES[code]||('error code '+code)) : 'unknown error';
+  const looksLikeFormatIssue = (code===3 || code===4);
+  if(state.mode==='book'){
+    const b = state.books.get(state.currentBookId);
+    Log.warn('Audiobook playback error'+(b?' — "'+b.title+'"':'')+': '+reason);
+    if(state.currentBookId){
+      if(looksLikeFormatIssue) tryTranscodeFallbackBook();
+      else{ state.playing=false; updatePlayButtons(); toastDone('This audiobook file format isn’t supported here', false, true); }
+    }
+    return;
+  }
+  const s = state.library.get(state.currentId);
+  Log.warn('Playback error'+(s?' — "'+s.title+'"':'')+': '+reason);
+  if(state.currentId){
+    if(looksLikeFormatIssue) tryTranscodeFallbackMusic(state.currentId);
+    else{ state.playing=false; updatePlayButtons(); toastDone('This format isn’t supported here', false, true); }
+  }
 });
 
 function updateProgress(){
+  if(state.mode==='book'){ updateBookProgress(); return; }
   const d = audio.duration||0, c = audio.currentTime||0;
   const pct = d? (c/d*100):0;
   $('seekFill').style.width = pct+'%';
@@ -2104,11 +2478,12 @@ function updateProgress(){
   }
 }
 function updatePlayButtons(){
-  const playing = !audio.paused && !!state.currentId;
+  const playing = !audio.paused && (state.mode==='book' ? !!state.currentBookId : !!state.currentId);
   const playPath = 'M8 5v14l11-7z';
   const pausePath = 'M6 5h4v14H6zM14 5h4v14h-4z';
   $('playIcon').innerHTML = '<path d="'+(playing?pausePath:playPath)+'"/>';
   $('miniPlayIcon').innerHTML = '<path d="'+(playing?pausePath:playPath)+'"/>';
+  const bpi = $('bpPlayIcon'); if(bpi) bpi.innerHTML = '<path d="'+(playing?pausePath:playPath)+'"/>';
   if('mediaSession' in navigator){ try{ navigator.mediaSession.playbackState = playing?'playing':'paused'; }catch(e){} }
 }
 function markPlayingRows(){
@@ -2318,6 +2693,90 @@ function openAddToPlaylist(id){
 }
 
 /* ============================================================================
+   Bulk "Add songs to playlist" picker
+   Opens a full-screen, virtualized list of the ENTIRE library so the user
+   can quickly multi-select many songs into one playlist, instead of adding
+   one song at a time via each song's ••• menu. Tapping a row toggles that
+   song's membership in the target playlist immediately (same underlying
+   togglePlaylistSong() used everywhere else), so a song can freely belong
+   to any number of playlists at once — this picker doesn't remove it from
+   any other playlist it's already in.
+============================================================================ */
+let bulkVList = null;
+function bulkAddFilteredIds(){
+  const base = state.order.length ? state.order : Array.from(state.library.keys());
+  const q = (state.bulkAddSearch||'').trim().toLowerCase();
+  if(!q) return base;
+  const terms = q.split(/\s+/);
+  return base.filter(id=>{
+    const s = state.library.get(id); if(!s) return false;
+    const hay = (s.title+' '+s.artist+' '+s.album).toLowerCase();
+    return terms.every(t=>hay.includes(t));
+  });
+}
+function bulkRowHTML(id){
+  const s = state.library.get(id);
+  if(!s) return '';
+  const pl = state.playlists.find(p=>p.id===state.bulkAddPlId);
+  const has = pl ? pl.songIds.includes(id) : false;
+  return '<button class="row bulkrow'+(has?' checked':'')+'" data-id="'+esc(id)+'" data-act="bulktoggle">'
+    + '<div class="row-art">'+NOTE_SVG+'</div>'
+    + '<div class="row-main"><div class="row-title">'+esc(s.title)+'</div>'
+    + '<div class="row-sub">'+esc(s.artist)+' · '+esc(s.album)+'</div></div>'
+    + '<div class="bulk-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>'
+    + '</button>';
+}
+function openBulkAdd(plId){
+  const p = state.playlists.find(x=>x.id===plId); if(!p) return;
+  state.bulkAddPlId = plId;
+  state.bulkAddSearch = '';
+  $('bulkSearchInput').value = '';
+  $('bulkSearchBox').classList.remove('has-text');
+  $('bulkAddTitle').textContent = p.name;
+  renderBulkCount();
+  if(!bulkVList) bulkVList = new VList($('bulkAddList'), 116, (id)=>bulkRowHTML(id));
+  bulkVList.setItems(bulkAddFilteredIds(), false);
+  $('bulkAdd').classList.add('open');
+  setTimeout(()=>{ try{ $('bulkSearchInput').focus(); }catch(e){} }, 320);
+}
+function closeBulkAdd(){
+  $('bulkAdd').classList.remove('open');
+  // reflect any additions in the playlist detail screen behind it
+  if(state.view==='detail' && state.detail && state.detail.plId===state.bulkAddPlId){
+    openDetail('playlist', state.bulkAddPlId);
+  }
+  if(state.view==='playlists') renderPlaylists();
+  state.bulkAddPlId = null;
+}
+function renderBulkCount(){
+  const p = state.playlists.find(x=>x.id===state.bulkAddPlId);
+  $('bulkAddCount').textContent = p ? pluralize(p.songIds.length,'song') : '';
+}
+function wireBulkAdd(){
+  $('bulkAddDone').addEventListener('click', closeBulkAdd);
+  $('bulkSearchInput').addEventListener('input', e=>{
+    state.bulkAddSearch = e.target.value;
+    $('bulkSearchBox').classList.toggle('has-text', !!state.bulkAddSearch);
+    bulkVList.setItems(bulkAddFilteredIds(), true);
+  });
+  $('bulkSearchClear').addEventListener('click', ()=>{
+    state.bulkAddSearch=''; $('bulkSearchInput').value='';
+    $('bulkSearchBox').classList.remove('has-text');
+    bulkVList.setItems(bulkAddFilteredIds(), true);
+  });
+  $('bulkAddList').addEventListener('click', e=>{
+    const row = e.target.closest('[data-act="bulktoggle"]'); if(!row) return;
+    const id = row.getAttribute('data-id');
+    togglePlaylistSong(state.bulkAddPlId, id);
+    const p = state.playlists.find(x=>x.id===state.bulkAddPlId);
+    const has = p ? p.songIds.includes(id) : false;
+    row.classList.toggle('checked', has);
+    renderBulkCount();
+    Log.info((has?'Added "':'Removed "')+ (state.library.get(id)?.title||id) +'" '+(has?'to':'from')+' playlist "'+(p?p.name:'')+'"');
+  });
+}
+
+/* ============================================================================
    Playlists CRUD
 ============================================================================ */
 let addTargetId = null;
@@ -2328,6 +2787,7 @@ function createPlaylist(name){
   const p = {id:uid(), name:name.trim()||'New Playlist', songIds:[]};
   state.playlists.push(p);
   persistPlaylists();
+  Log.info('Created playlist "'+p.name+'"');
   return p;
 }
 function togglePlaylistSong(plId, songId){
@@ -2343,11 +2803,11 @@ function removeFromPlaylist(plId, songId){
 }
 function deletePlaylist(plId){
   const i = state.playlists.findIndex(x=>x.id===plId);
-  if(i>=0) state.playlists.splice(i,1);
+  if(i>=0){ Log.info('Deleted playlist "'+state.playlists[i].name+'"'); state.playlists.splice(i,1); }
   persistPlaylists();
 }
 function renamePlaylist(plId, name){
-  const p = state.playlists.find(x=>x.id===plId); if(p){ p.name=name.trim()||p.name; persistPlaylists(); }
+  const p = state.playlists.find(x=>x.id===plId); if(p){ const old=p.name; p.name=name.trim()||p.name; persistPlaylists(); Log.info('Renamed playlist "'+old+'" to "'+p.name+'"'); }
 }
 
 /* ============================================================================
@@ -2358,7 +2818,7 @@ function persistPrefs(){
   clearTimeout(prefsTimer);
   prefsTimer = setTimeout(()=>{
     DB.set('prefs', {sort:state.sort, volume:state.volume, shuffle:state.shuffle, repeat:state.repeat, view:state.view,
-      accent:state.accent, speed:state.speed, eqEnabled:state.eqEnabled, eqGains:state.eqGains,
+      accent:state.accent, speed:state.speed, bookSpeed:state.bookSpeed, eqEnabled:state.eqEnabled, eqGains:state.eqGains,
       favorites:state.favorites, recent:state.recent}).catch(()=>{});
   }, 250);
 }
@@ -2391,6 +2851,274 @@ function toastDone(msg, isEmpty, isWarn){
   $('toastMsg').textContent = msg;
   $('toast').classList.add('show');
   toastTimer = setTimeout(()=>$('toast').classList.remove('show'), 2200);
+}
+
+/* ============================================================================
+   FFmpeg (WebAssembly) playback fallback.
+
+   Some formats — WMA above all — cannot be decoded by Chrome on any
+   platform, because Chrome has never shipped a WMA codec. There is no way
+   for a web app to add a missing browser codec. What CAN be done: run a
+   real decoder (FFmpeg, compiled to WebAssembly) inside the page itself,
+   and transcode the file to mp3 before handing it to <audio>.
+
+   Design:
+   - The ~32MB FFmpeg engine (@ffmpeg/core, single-threaded — this avoids
+     the SharedArrayBuffer/cross-origin-isolation headers that the
+     multi-threaded build requires and that a static file can't set) is
+     fetched from a CDN ONLY the first time it's actually needed, then
+     cached as raw bytes in IndexedDB so every future use — including in
+     later sessions — is fully offline. This is the one deliberate
+     exception to Reel otherwise making zero network requests; everything
+     else about the app remains 100% offline.
+   - We talk to ffmpeg-core.js directly with a small worker written here
+     (rather than pulling in the @ffmpeg/ffmpeg wrapper package), because
+     that wrapper's worker-loading strategy depends on relative ES-module
+     imports that don't resolve once everything is running from Blob URLs
+     with no real file structure behind them. Driving ffmpeg-core.js's own
+     documented API (FS.writeFile/exec/FS.readFile) directly sidesteps that
+     entirely and needs far less code.
+   - Automatic + transparent: playback failures that look like a genuine
+     format/codec problem trigger this fallback on their own — the user
+     just taps play. A converted copy of each song is cached (as a small
+     mp3) so the SAME song never needs to be converted twice.
+============================================================================ */
+const FF_CORE_VERSION = '0.12.10';
+const FF_JS_URLS = [
+  'https://cdn.jsdelivr.net/npm/@ffmpeg/core@'+FF_CORE_VERSION+'/dist/umd/ffmpeg-core.js',
+  'https://unpkg.com/@ffmpeg/core@'+FF_CORE_VERSION+'/dist/umd/ffmpeg-core.js',
+];
+const FF_WASM_URLS = [
+  'https://cdn.jsdelivr.net/npm/@ffmpeg/core@'+FF_CORE_VERSION+'/dist/umd/ffmpeg-core.wasm',
+  'https://unpkg.com/@ffmpeg/core@'+FF_CORE_VERSION+'/dist/umd/ffmpeg-core.wasm',
+];
+
+const FFEngine = (()=>{
+  let worker=null, readyPromise=null, msgId=0;
+  const pending = new Map();
+
+  async function fetchWithFallback(urls, onProgress){
+    let lastErr=null;
+    for(const url of urls){
+      try{
+        const resp = await fetch(url);
+        if(!resp.ok) throw new Error('HTTP '+resp.status);
+        if(!resp.body || !onProgress) return await resp.arrayBuffer();
+        const total = parseInt(resp.headers.get('content-length')||'0',10);
+        const reader = resp.body.getReader();
+        let received=0; const chunks=[];
+        while(true){
+          const {done,value} = await reader.read();
+          if(done) break;
+          chunks.push(value); received += value.length;
+          if(total) onProgress(received/total);
+        }
+        const out = new Uint8Array(received); let off=0;
+        for(const c of chunks){ out.set(c,off); off+=c.length; }
+        return out.buffer;
+      }catch(e){ lastErr=e; console.warn('FFmpeg engine source unreachable: '+url, e); }
+    }
+    throw lastErr || new Error('all sources unreachable');
+  }
+
+  async function loadCoreBytes(onProgress){
+    let jsText = await DB.get('ffCoreJS');
+    let wasmBuf = await DB.get('ffCoreWasm');
+    if(jsText && wasmBuf) return {jsText, wasmBuf, fromCache:true};
+    onProgress && onProgress(0);
+    const jsBuf = await fetchWithFallback(FF_JS_URLS, null);
+    jsText = new TextDecoder().decode(jsBuf);
+    wasmBuf = await fetchWithFallback(FF_WASM_URLS, onProgress);
+    try{ await DB.set('ffCoreJS', jsText); await DB.set('ffCoreWasm', wasmBuf); }catch(e){}
+    return {jsText, wasmBuf, fromCache:false};
+  }
+
+  // Minimal worker: loads ffmpeg-core.js (Emscripten glue) via importScripts,
+  // instantiates it with an explicit wasmURL (so it never tries to fetch the
+  // .wasm from a relative path next to itself — everything here is a Blob
+  // URL with no real filesystem behind it), then exposes just enough of the
+  // core's own FS/exec API to run one transcode at a time.
+  const WORKER_SRC = [
+    "self.onmessage = async (e) => {",
+    "  const { id, cmd, args } = e.data;",
+    "  try {",
+    "    if (cmd === 'init') {",
+    "      importScripts(args.coreJsBlobURL);",
+    "      self.__core = await self.createFFmpegCore({",
+    "        mainScriptUrlOrBlob: args.coreJsBlobURL + '#' + btoa(JSON.stringify({wasmURL: args.wasmBlobURL, workerURL: ''})),",
+    "      });",
+    "      self.postMessage({id, ok:true});",
+    "    } else if (cmd === 'transcode') {",
+    "      const core = self.__core;",
+    "      core.FS.writeFile(args.inputName, args.inputBytes);",
+    "      const ret = core.exec(args.execArgs);",
+    "      if (ret !== 0) throw new Error('ffmpeg exit code ' + ret);",
+    "      const out = core.FS.readFile(args.outputName);",
+    "      try{ core.FS.unlink(args.inputName); }catch(_){}",
+    "      try{ core.FS.unlink(args.outputName); }catch(_){}",
+    "      self.postMessage({id, ok:true, output: out.buffer}, [out.buffer]);",
+    "    }",
+    "  } catch (err) {",
+    "    self.postMessage({id, ok:false, error: (err && err.message) || String(err)});",
+    "  }",
+    "};",
+  ].join('\n');
+
+  function send(cmd, args, transfer){
+    return new Promise((resolve,reject)=>{
+      const id = ++msgId;
+      pending.set(id, {resolve,reject});
+      worker.postMessage({id,cmd,args}, transfer||[]);
+    });
+  }
+
+  function isReady(){ return !!readyPromise; }
+
+  async function ensureReady(onProgress){
+    if(readyPromise) return readyPromise;
+    readyPromise = (async ()=>{
+      const {jsText, wasmBuf, fromCache} = await loadCoreBytes(onProgress);
+      Log.info('FFmpeg engine '+(fromCache?'loaded from local cache':'downloaded')+' — '+Math.round(wasmBuf.byteLength/1024/1024)+'MB');
+      const jsBlobURL = URL.createObjectURL(new Blob([jsText], {type:'text/javascript'}));
+      const wasmBlobURL = URL.createObjectURL(new Blob([wasmBuf], {type:'application/wasm'}));
+      const workerBlobURL = URL.createObjectURL(new Blob([WORKER_SRC], {type:'text/javascript'}));
+      worker = new Worker(workerBlobURL);
+      worker.onmessage = (e)=>{
+        const {id, ok, output, error} = e.data;
+        const p = pending.get(id); if(!p) return;
+        pending.delete(id);
+        if(ok) p.resolve(output); else p.reject(new Error(error));
+      };
+      worker.onerror = (e)=>{ Log.error('FFmpeg worker error: '+(e&&e.message?e.message:e)); };
+      await send('init', {coreJsBlobURL:jsBlobURL, wasmBlobURL});
+      state.ffEngineCached = true;
+      if(state.view==='settings') renderSettings();
+      Log.info('FFmpeg WASM engine ready');
+    })();
+    return readyPromise;
+  }
+
+  async function transcodeToMp3(blob, origName, onProgress){
+    await ensureReady(onProgress);
+    const ext = (String(origName).match(/\.([a-z0-9]+)$/i)||[,'in'])[1];
+    const inputName = 'input.'+ext;
+    const outputName = 'output.mp3';
+    const inputBytes = new Uint8Array(await blob.arrayBuffer());
+    const execArgs = ['-i', inputName, '-vn', '-acodec', 'libmp3lame', '-b:a', '160k', outputName];
+    const outBuf = await send('transcode', {inputName, inputBytes, execArgs, outputName}, [inputBytes.buffer]);
+    return new Blob([outBuf], {type:'audio/mpeg'});
+  }
+
+  return { ensureReady, transcodeToMp3, isReady };
+})();
+
+/* Per-file transcode cache — once a song/chapter is converted, the small
+   mp3 result is stored so it never needs to be converted again. */
+async function getCachedTranscode(key){
+  try{ const buf = await DB.get('transcode:'+key); return buf instanceof ArrayBuffer ? new Blob([buf],{type:'audio/mpeg'}) : null; }
+  catch(e){ return null; }
+}
+async function setCachedTranscode(key, blob){
+  try{ const buf = await blob.arrayBuffer(); await DB.set('transcode:'+key, buf); }catch(e){}
+}
+
+/* Queue + per-item guard: the WASM engine can only run one job at a time,
+   and both playSong()'s catch block and the 'error' event can fire for the
+   same failed attempt — this ensures every genuinely distinct request
+   still eventually runs (queued, not dropped), while never converting the
+   same song/chapter twice concurrently. */
+const ffInFlight = new Set();
+let ffQueue = Promise.resolve();
+function queueFF(fn){
+  const run = ()=>fn().catch(e=>console.warn('FFmpeg fallback task failed', e));
+  ffQueue = ffQueue.then(run, run);
+  return ffQueue;
+}
+
+async function tryTranscodeFallbackMusic(id){
+  const key = 'm:'+id;
+  if(ffInFlight.has(key)) return;
+  ffInFlight.add(key);
+  queueFF(async ()=>{
+    try{ await doTranscodeFallbackMusic(id); }
+    finally{ ffInFlight.delete(key); }
+  });
+}
+async function doTranscodeFallbackMusic(id){
+  const s = state.library.get(id); if(!s) return;
+  try{
+    let blob = await getCachedTranscode(id);
+    if(!blob){
+      const srcFile = s.file || await fileForSong(s);
+      if(!srcFile) return;
+      const engineReady = FFEngine.isReady();
+      toastShow(engineReady ? 'Converting “'+s.title+'”…' : 'Setting up format conversion (one-time download)…', true);
+      Log.info('Attempting FFmpeg fallback for "'+s.title+'" ('+s.path+')');
+      blob = await FFEngine.transcodeToMp3(srcFile, s.name, (frac)=>{
+        toastProgress(frac, engineReady ? 'Converting…' : 'Downloading conversion engine — '+Math.round(frac*100)+'%');
+      });
+      await setCachedTranscode(id, blob);
+      Log.info('FFmpeg fallback succeeded for "'+s.title+'"');
+      toastDone('Converted — playing now');
+    }
+    if(state.currentId !== id) return; // user moved on while this was converting
+    if(currentObjectUrl){ try{ URL.revokeObjectURL(currentObjectUrl); }catch(e){} }
+    currentObjectUrl = URL.createObjectURL(blob);
+    audio.src = currentObjectUrl;
+    intentionalPause = false;
+    await audio.play();
+    state.playing = true;
+    updateNowPlaying(); updatePlayButtons(); markPlayingRows(); updateMediaSession(s);
+  }catch(e){
+    Log.warn('FFmpeg fallback failed for "'+s.title+'": '+(e&&e.message?e.message:e));
+    toastDone('This format isn’t supported here', false, true);
+    state.playing=false; updatePlayButtons();
+  }
+}
+
+async function tryTranscodeFallbackBook(){
+  const bookId = state.currentBookId, partIdx = state.currentPart;
+  if(!bookId) return;
+  const key = 'b:'+bookId+':'+partIdx;
+  if(ffInFlight.has(key)) return;
+  ffInFlight.add(key);
+  queueFF(async ()=>{
+    try{ await doTranscodeFallbackBook(bookId, partIdx); }
+    finally{ ffInFlight.delete(key); }
+  });
+}
+async function doTranscodeFallbackBook(bookId, partIdx){
+  const b = state.books.get(bookId); if(!b) return;
+  const part = b.parts[partIdx]; if(!part) return;
+  const cacheKey = bookId+':'+partIdx;
+  try{
+    let blob = await getCachedTranscode(cacheKey);
+    if(!blob){
+      const srcFile = part.file || await fileForPart(part);
+      if(!srcFile) return;
+      const engineReady = FFEngine.isReady();
+      toastShow(engineReady ? 'Converting chapter…' : 'Setting up format conversion (one-time download)…', true);
+      Log.info('Attempting FFmpeg fallback for audiobook "'+b.title+'" chapter '+(partIdx+1));
+      blob = await FFEngine.transcodeToMp3(srcFile, part.name, (frac)=>{
+        toastProgress(frac, engineReady ? 'Converting…' : 'Downloading conversion engine — '+Math.round(frac*100)+'%');
+      });
+      await setCachedTranscode(cacheKey, blob);
+      Log.info('FFmpeg fallback succeeded for audiobook "'+b.title+'"');
+      toastDone('Converted — playing now');
+    }
+    if(state.currentBookId!==bookId || state.currentPart!==partIdx) return;
+    if(currentObjectUrl){ try{ URL.revokeObjectURL(currentObjectUrl); }catch(e){} }
+    currentObjectUrl = URL.createObjectURL(blob);
+    audio.src = currentObjectUrl; // pendingBookSeek is still set from the original failed attempt
+    intentionalPause = false;
+    await audio.play();
+    state.playing = true;
+    updatePlayButtons(); updateBookMediaSession(); updateBookMini();
+  }catch(e){
+    Log.warn('FFmpeg fallback failed for audiobook "'+b.title+'": '+(e&&e.message?e.message:e));
+    toastDone('This audiobook file format isn’t supported here', false, true);
+    state.playing=false; updatePlayButtons();
+  }
 }
 
 /* ============================================================================
@@ -2435,11 +3163,12 @@ function switchView(v, isDetail){
     const nv = b.dataset.nav;
     b.classList.toggle('active', nv===v || (v==='detail' && nv===prevMainView));
   });
-  const hideSearch = (v==='detail'||v==='settings'||v==='about');
+  const hideSearch = (v==='detail'||v==='settings'||v==='about'||v==='books'||v==='log');
   $('searchBox').style.display = hideSearch ? 'none' : '';
   $('segbar').style.display = (v==='songs' && state.library.size>0)?'flex':'none';
   if(v==='settings') renderSettings();
   else if(v==='about') renderAbout();
+  else if(v==='log') renderLogView();
   refreshCurrentView();
 }
 
@@ -2511,10 +3240,10 @@ function wire(){
   rail.addEventListener('touchend', ()=>{ azActive=false; });
 
   // mini player
-  $('miniOpen').addEventListener('click', openPlayer);
-  $('miniArt').addEventListener('click', openPlayer);
+  $('miniOpen').addEventListener('click', ()=>{ if(state.mode==='book') openBookPlayer(); else openPlayer(); });
+  $('miniArt').addEventListener('click', ()=>{ if(state.mode==='book') openBookPlayer(); else openPlayer(); });
   $('miniPlay').addEventListener('click', e=>{ e.stopPropagation(); togglePlay(); });
-  $('miniNext').addEventListener('click', e=>{ e.stopPropagation(); nextTrack(false); });
+  $('miniNext').addEventListener('click', e=>{ e.stopPropagation(); if(state.mode==='book') bookSkip(30); else nextTrack(false); });
 
   // full player controls
   $('playerDown').addEventListener('click', closePlayer);
@@ -2571,12 +3300,23 @@ function wire(){
   $('newCancel').addEventListener('click', closeSheet);
   $('newCreate').addEventListener('click', ()=>{
     const name = $('newPlaylistName').value;
-    if(editingPlaylistId){ renamePlaylist(editingPlaylistId, name); if(state.view==='detail'&&state.detail&&state.detail.plId===editingPlaylistId){ openDetail('playlist',editingPlaylistId);} }
-    else{
+    if(editingPlaylistId){
+      renamePlaylist(editingPlaylistId, name);
+      if(state.view==='detail'&&state.detail&&state.detail.plId===editingPlaylistId){ openDetail('playlist',editingPlaylistId);}
+      closeSheet(); if(state.view==='playlists') renderPlaylists();
+    }else{
       const p = createPlaylist(name);
-      if(addTargetId){ togglePlaylistSong(p.id, addTargetId); addTargetId=null; toastDone('Added to '+p.name); }
+      if(addTargetId){
+        // came from a specific song's "Add to playlist" flow — just add it and return
+        togglePlaylistSong(p.id, addTargetId); addTargetId=null; toastDone('Added to '+p.name);
+        closeSheet(); if(state.view==='playlists') renderPlaylists();
+      }else{
+        // plain "New playlist" from the Playlists tab — take the user straight
+        // to the new (empty) playlist, where "Add songs" is right there.
+        closeSheet();
+        openDetail('playlist', p.id);
+      }
     }
-    closeSheet(); if(state.view==='playlists') renderPlaylists();
   });
   $('newPlaylistName').addEventListener('keydown', e=>{ if(e.key==='Enter') $('newCreate').click(); });
 
@@ -2599,6 +3339,10 @@ function wire(){
   });
 
   window.addEventListener('resize', ()=>{ if(songsVList) songsVList.refresh(); if(detailVList) detailVList.refresh(); });
+
+  wireAudiobooks();
+  wireLogView();
+  wireBulkAdd();
 }
 
 function importFlow(){
@@ -2654,6 +3398,8 @@ function onListClick(e){
   if(plRow){ openDetail('playlist', plRow.getAttribute('data-key')); return; }
   const smartRow = t.closest('[data-act="smart"]');
   if(smartRow){ openSmart(smartRow.getAttribute('data-key')); return; }
+  const booksRow = t.closest('[data-act="books"]');
+  if(booksRow){ openBooksView(); return; }
 
   const playAll = t.closest('[data-act="playall"]');
   if(playAll){ if(state.detail&&state.detail.songIds.length){ state.shuffle=false; $('btnShuffle').classList.remove('active'); playContext(state.detail.songIds,0); openPlayer(); } return; }
@@ -2661,6 +3407,8 @@ function onListClick(e){
   if(shufAll){ if(state.detail&&state.detail.songIds.length){ state.shuffle=true; $('btnShuffle').classList.add('active'); playContext(state.detail.songIds,0); openPlayer(); } return; }
   const plEdit = t.closest('[data-act="pledit"]');
   if(plEdit){ if(state.detail&&state.detail.plId) openPlaylistMenu(state.detail.plId); return; }
+  const addSongsBtn = t.closest('[data-act="addsongs"]');
+  if(addSongsBtn){ if(state.detail&&state.detail.plId) openBulkAdd(state.detail.plId); return; }
 }
 
 function onMenuClick(e){
@@ -2772,6 +3520,11 @@ function setCapabilityNote(){
 }
 
 async function boot(){
+  await Log.load();
+  Log.info('Reel v'+APP_VERSION+' booting — '+navigator.userAgent);
+  // non-blocking: just checks IndexedDB for a previously-cached engine so
+  // Settings can show accurate status; does not fetch anything itself
+  DB.get('ffCoreWasm').then(v=>{ state.ffEngineCached = !!v; if(state.view==='settings') renderSettings(); }).catch(()=>{});
   wire();
   setCapabilityNote();
   // load prefs
@@ -2790,6 +3543,7 @@ async function boot(){
       document.querySelectorAll('#segbar .seg').forEach(s=>s.classList.toggle('active', s.dataset.sort===state.sort));
       if(prefs.accent) state.accent = prefs.accent;
       if(typeof prefs.speed==='number') state.speed = prefs.speed;
+      if(typeof prefs.bookSpeed==='number') state.bookSpeed = prefs.bookSpeed;
       if(typeof prefs.eqEnabled==='boolean') state.eqEnabled = prefs.eqEnabled;
       if(Array.isArray(prefs.eqGains) && prefs.eqGains.length===6) state.eqGains = prefs.eqGains.slice();
       if(Array.isArray(prefs.favorites)) state.favorites = prefs.favorites.slice();
@@ -2806,9 +3560,24 @@ async function boot(){
   }catch(e){}
   // load persisted library BEFORE folder scan so songs show up instantly
   const loadedCount = await loadLibrary();
+  Log.info('Loaded '+loadedCount+' song(s) from local storage');
   if(loadedCount>0){
     rebuildDerived();
     refreshCurrentView();
+  }
+  // load persisted audiobooks (metadata + resume positions)
+  const loadedBooks = await loadBooks();
+  Log.info('Loaded '+loadedBooks+' audiobook(s) from local storage');
+  // try to resume the audiobooks folder (separate from music)
+  if(hasFSAccess){
+    try{
+      const bh = await DB.get('booksDirHandle');
+      if(bh){
+        state.booksDirHandle = bh;
+        const bperm = await bh.queryPermission({mode:'read'});
+        if(bperm==='granted'){ state.usingBooksFolder = true; scanBooksFolder(false); }
+      }
+    }catch(e){ console.warn('books resume failed', e); }
   }
   // try to resume folder
   if(hasFSAccess){
@@ -2819,6 +3588,7 @@ async function boot(){
         const perm = await handle.queryPermission({mode:'read'});
         if(perm==='granted'){
           state.usingFolder=true;
+          Log.info('Music folder permission already granted — scanning');
           await scanAndImportFolder(loadedCount===0);   // only show scan toast if nothing was pre-loaded
           startAutoRescan();
         }else{
@@ -2826,12 +3596,14 @@ async function boot(){
           // the browser every new session (see primeFolderPermission below).
           // Songs already show from the persisted library; tapping anywhere
           // will trigger the one-time permission prompt automatically.
+          Log.info('Music folder permission needs re-granting this session');
           primeFolderPermission();
         }
       }
     }catch(e){ console.warn('resume failed', e); }
   }
   refreshCurrentView();
+  Log.info('Boot complete');
 }
 
 /* Chrome's File System Access API deliberately does not remember folder
@@ -3099,6 +3871,15 @@ function renderSettings(){
     + '<div class="set-note" style="margin-top:10px;color:var(--amber);">Added to your home screen? When Chrome asks, choose <b>Install</b> — not <b>Create shortcut</b>. "Create shortcut" just opens Reel inside a normal Chrome tab, which Android will pause much more aggressively in the background. If music keeps pausing when you return to the app, remove that icon and re-add it choosing Install instead.</div>'
     + '</div>';
 
+  // Advanced
+  html += '<div class="set-group"><h3>Advanced</h3><div class="set-card">'
+    + '<button class="set-row" data-set="log"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></div><div class="sm"><div class="st">Debug log</div><div class="ss">'+Log.count()+' entries · actions, imports, playback &amp; errors</div></div>'+chev+'</button>'
+    + '<button class="set-row" data-set="ffengine"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></div><div class="sm"><div class="st">Format conversion engine</div><div class="ss">'+(state.ffEngineCached ? 'Ready — WMA and other unsupported formats convert automatically' : 'Not downloaded yet — tap to fetch now (~32MB, one time, needs internet)') +'</div></div>'+chev+'</button>'
+    + '</div>'
+    + '<div class="set-note">The log stays on your device and is never sent anywhere. Useful if something isn\'t working right and you want to see exactly what happened.</div>'
+    + '<div class="set-note" style="margin-top:10px;">Some formats (WMA especially) can\'t be played by any Chrome-based browser directly — there\'s no codec for it. The conversion engine works around this by converting those files on your device. It downloads automatically the first time it\'s needed, or you can fetch it ahead of time above while on Wi-Fi. Everything else about Reel stays fully offline.</div>'
+    + '</div>';
+
   $('settingsBody').innerHTML = html;
 }
 function onSettingsClick(e){
@@ -3116,11 +3897,22 @@ function onSettingsClick(e){
   if(st){
     const a = st.getAttribute('data-set');
     if(a==='about'){ switchView('about'); }
+    else if(a==='log'){ switchView('log'); }
     else if(a==='rescan'){ closePlayer(); doRescanFromSettings(); }
     else if(a==='cleanup'){
       const n = removeMissingSongs();
       toastDone(n>0 ? 'Removed '+pluralize(n,'missing song') : 'Nothing to clean up', n>0);
       renderSettings();
+    }
+    else if(a==='ffengine'){
+      if(state.ffEngineCached || FFEngine.isReady()){
+        toastDone('Already downloaded and ready', false);
+      }else{
+        toastShow('Downloading conversion engine…', true);
+        FFEngine.ensureReady((frac)=>toastProgress(frac, Math.round(frac*100)+'%'))
+          .then(()=>{ toastDone('Ready — conversion engine downloaded'); renderSettings(); })
+          .catch((e)=>{ Log.warn('Manual engine download failed: '+(e&&e.message?e.message:e)); toastDone('Download failed — check your connection', false, true); });
+      }
     }
     return;
   }
@@ -3167,6 +3959,629 @@ function renderAbout(){
   });
   $('aboutBody').innerHTML = html;
 }
+
+/* ============================================================================
+   Debug Log viewer
+============================================================================ */
+function renderLogView(){
+  const entries = Log.entries();
+  $('logCount').textContent = pluralize(entries.length,'entry').replace('entrys','entries');
+  if(entries.length===0){
+    $('logScroll').innerHTML = '<div class="log-empty">No log entries yet.<br>Actions, imports, playback, and any errors will appear here as you use the app.</div>';
+    return;
+  }
+  // newest first — most useful for "what just happened" debugging
+  let html='';
+  for(let i=entries.length-1;i>=0;i--){
+    const e = entries[i];
+    const d = new Date(e.t);
+    const ts = d.toTimeString().slice(0,8);
+    html += '<div class="log-line '+esc(e.level)+'"><span class="lt">'+ts+'</span><span class="lm">'+esc(e.msg)+'</span></div>';
+  }
+  $('logScroll').innerHTML = html;
+}
+async function copyLogToClipboard(){
+  const text = Log.text();
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){ await navigator.clipboard.writeText(text); }
+    else{
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
+      document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+    }
+    toastDone('Log copied to clipboard');
+  }catch(e){ toastDone('Couldn’t copy — try Save instead', false, true); }
+}
+function downloadLog(){
+  try{
+    const blob = new Blob([Log.text()], {type:'text/plain'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+    a.href = url; a.download = 'reel-log-'+stamp+'.txt';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+    toastDone('Log saved');
+  }catch(e){ toastDone('Couldn’t save log file', false, true); }
+}
+function wireLogView(){
+  $('logBack').addEventListener('click', ()=>switchView('settings'));
+  $('logCopy').addEventListener('click', copyLogToClipboard);
+  $('logDownload').addEventListener('click', downloadLog);
+  $('logClear').addEventListener('click', ()=>{ Log.clear(); renderLogView(); toastDone('Log cleared'); });
+}
+
+/* ============================================================================
+   AUDIOBOOKS
+   A "book" is a folder of one or more audio parts (chapters), or a single
+   loose audio file. Each book independently remembers its resume position
+   as {part, time} and picks up exactly where you left off. Supports all the
+   same audio formats as the music library (mp3, m4a/m4b, aac, ogg/opus,
+   flac, wav, etc.). Audiobook-oriented controls: ±30s skip, chapter jump,
+   per-book speed, remaining-time display, sleep timer.
+============================================================================ */
+
+/* ---- natural sort so "Chapter 2" comes before "Chapter 10" ---- */
+function naturalCompare(a, b){
+  return a.localeCompare(b, undefined, {numeric:true, sensitivity:'base'});
+}
+function cleanBookTitle(name){
+  return String(name||'').replace(/[_]+/g,' ').replace(/\s+/g,' ').trim() || 'Untitled';
+}
+
+/* ---- folder pick / import for audiobooks (separate from music) ---- */
+async function pickBooksFolder(){
+  if(hasFSAccess){
+    try{
+      const handle = await window.showDirectoryPicker({ id:'reel-books', mode:'read' });
+      state.booksDirHandle = handle;
+      state.usingBooksFolder = true;
+      Log.info('User selected audiobooks folder: "'+handle.name+'"');
+      await DB.set('booksDirHandle', handle).catch(()=>{});
+      await scanBooksFolder(true);
+    }catch(e){ if(e && e.name==='AbortError'){ Log.info('Audiobooks folder picker cancelled'); return; } console.warn('books folder pick failed', e); }
+  }else{
+    $('booksFolderInput').click();
+  }
+}
+
+/* Group a flat list of audio entries into books keyed by their folder.
+   entries: [{file?, path, handle?}] */
+async function buildBooksFromEntries(entries){
+  const groups = new Map(); // folder -> [entry...]
+  for(const e of entries){
+    const folder = parentDirOf(e.path);
+    // loose files directly in the root each become their own single-part book
+    const key = folder || ('__loose__/'+e.path);
+    if(!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(e);
+  }
+  let added = 0, updated = 0;
+  for(const [key, list] of groups){
+    list.sort((a,b)=>naturalCompare(a.path, b.path));
+    const isLoose = key.startsWith('__loose__/');
+    const folder = isLoose ? '' : key;
+    const bookId = 'book:' + key;
+    const parts = list.map(e=>({ name:e.file? e.file.name : e.path.split('/').pop(), path:e.path, size:e.file?e.file.size:0, handle:e.handle||null, file:e.file||null, duration:0 }));
+    // derive title/author
+    let title, author='';
+    if(isLoose){ title = cleanBookTitle((parts[0].name||'').replace(/\.[^.]+$/,'')); }
+    else { title = cleanBookTitle(folder.split('/').pop()); }
+    try{
+      const meta = await extractMeta(parts[0].file || (parts[0].handle? await parts[0].handle.getFile() : null) || {name:parts[0].name}, parts[0].path);
+      if(meta){
+        if(meta.artist && meta.artist!=='Unknown Artist') author = meta.artist;
+        if(isLoose && meta.title) title = cleanBookTitle(meta.title);
+        else if(!isLoose && meta.album && meta.album!=='Unknown Album' && /^\W*$/.test(title)) title = cleanBookTitle(meta.album);
+      }
+    }catch(e){}
+    if(state.books.has(bookId)){
+      // refresh part file/handle refs (keep saved position!)
+      const b = state.books.get(bookId);
+      b.parts = parts.map((np,i)=>{
+        const old = b.parts[i];
+        if(old && old.path===np.path){ old.handle = np.handle||old.handle; old.file = np.file||old.file; old.size = np.size||old.size; return old; }
+        return np;
+      });
+      b.title = b.title || title; b.author = b.author || author;
+      updated++;
+    }else{
+      state.books.set(bookId, {
+        id:bookId, title, author, folder, isLoose,
+        parts,
+        position:{part:0, time:0},
+        finished:false,
+        addedAt: Date.now(),
+        lastPlayedAt: 0,
+      });
+      added++;
+    }
+  }
+  return {added, updated};
+}
+
+async function scanBooksFolder(showToast){
+  if(!state.booksDirHandle) return;
+  if(showToast) toastShow('Scanning audiobooks', true);
+  const acc = [];
+  const guard = {count:0, foldersScanned:0, errors:0, skippedDeep:0,
+    onProgress:(g)=>{ if(showToast) toastProgress(0, 'Scanned '+g.foldersScanned+' folder'+(g.foldersScanned===1?'':'s')+', '+g.count+' files'); }
+  };
+  try{ await scanDir(state.booksDirHandle, '', acc, guard, 0); }
+  catch(e){ console.warn('books scan error', e); }
+  const {added, updated} = await buildBooksFromEntries(acc);
+  rebuildBooksOrder();
+  saveBooks();
+  Log.info('Audiobook scan: '+guard.foldersScanned+' folders, '+acc.length+' files, '+added+' new book(s), '+updated+' updated');
+  if(state.view==='books') renderBooks();
+  if(state.view==='playlists') renderPlaylists();
+  const msg = state.books.size===0 ? 'No audio found in that folder'
+    : (added? added+' new audiobook'+(added===1?'':'s')+' found' : 'Audiobooks up to date');
+  if(showToast) toastDone(msg, state.books.size===0);
+}
+
+async function handleBooksInput(fileList){
+  const entries = [];
+  for(const f of fileList){
+    if(!isAudio(f.name)) continue;
+    const rel = f.webkitRelativePath && f.webkitRelativePath.length ? f.webkitRelativePath : f.name;
+    // drop the top-level picked-folder segment so grouping is by inner folders
+    const parts = rel.split('/');
+    const path = parts.length>1 ? parts.slice(1).join('/') : rel;
+    entries.push({ file:f, path, handle:null });
+  }
+  if(entries.length===0){ toastDone('No supported audio found', false, true); return; }
+  toastShow('Adding audiobooks', true);
+  await buildBooksFromEntries(entries);
+  rebuildBooksOrder();
+  saveBooks();
+  if(state.view==='books') renderBooks();
+  if(state.view==='playlists') renderPlaylists();
+  toastDone(pluralize(state.books.size,'audiobook'));
+}
+
+function rebuildBooksOrder(){
+  const arr = Array.from(state.books.values());
+  // most recently listened first, then recently added, then title
+  arr.sort((a,b)=> (b.lastPlayedAt||0)-(a.lastPlayedAt||0) || (b.addedAt||0)-(a.addedAt||0) || naturalCompare(a.title,b.title));
+  state.booksOrder = arr.map(b=>b.id);
+}
+
+/* ---- persistence: metadata + resume positions (handles persist, files don't) ---- */
+let booksSaveTimer = null;
+function saveBooks(){
+  clearTimeout(booksSaveTimer);
+  booksSaveTimer = setTimeout(()=>{
+    const arr = [];
+    for(const b of state.books.values()){
+      arr.push({
+        id:b.id, title:b.title, author:b.author, folder:b.folder, isLoose:!!b.isLoose,
+        position:b.position, finished:!!b.finished, addedAt:b.addedAt, lastPlayedAt:b.lastPlayedAt,
+        parts: b.parts.map(p=>({ name:p.name, path:p.path, size:p.size, duration:p.duration||0, handle:p.handle||null })),
+      });
+    }
+    DB.set('books', arr).catch(e=>console.warn('saveBooks failed', e));
+  }, 400);
+}
+async function loadBooks(){
+  try{
+    const arr = await DB.get('books');
+    if(!Array.isArray(arr)) return 0;
+    for(const b of arr){
+      if(!b || !b.id) continue;
+      state.books.set(b.id, {
+        id:b.id, title:b.title, author:b.author||'', folder:b.folder||'', isLoose:!!b.isLoose,
+        parts: (b.parts||[]).map(p=>({ name:p.name, path:p.path, size:p.size||0, duration:p.duration||0, handle:p.handle||null, file:null })),
+        position: b.position||{part:0,time:0},
+        finished: !!b.finished,
+        addedAt: b.addedAt||Date.now(),
+        lastPlayedAt: b.lastPlayedAt||0,
+      });
+    }
+    rebuildBooksOrder();
+    return arr.length;
+  }catch(e){ console.warn('loadBooks failed', e); return 0; }
+}
+
+/* ---- the Audiobooks list view ---- */
+function openBooksView(){
+  switchView('books', true);
+  renderBooks();
+}
+function bookProgressFraction(b){
+  const total = bookTotalDuration(b);
+  if(!total) return b.finished?1:0;
+  let elapsed = 0;
+  for(let i=0;i<b.position.part && i<b.parts.length;i++) elapsed += (b.parts[i].duration||0);
+  elapsed += b.position.time||0;
+  return Math.max(0, Math.min(1, elapsed/total));
+}
+function bookTotalDuration(b){
+  let t=0; for(const p of b.parts) t += (p.duration||0); return t;
+}
+function bookRemainingLabel(b){
+  const total = bookTotalDuration(b);
+  if(!total) return b.parts.length>1 ? pluralize(b.parts.length,'chapter') : '';
+  const frac = bookProgressFraction(b);
+  const remain = total*(1-frac);
+  if(b.finished || remain < 30) return 'Finished';
+  return fmtLong(remain)+' left';
+}
+function fmtLong(secs){
+  secs = Math.round(secs);
+  const h = Math.floor(secs/3600), m = Math.floor((secs%3600)/60);
+  if(h>0) return h+'h '+m+'m';
+  const s = secs%60;
+  return m>0 ? m+'m' : s+'s';
+}
+function renderBooks(){
+  const el = $('booksBody');
+  const hasFolder = state.usingBooksFolder || state.booksDirHandle || state.books.size>0;
+  let html = '<div class="books-actions"><button class="btn-primary" id="booksPickBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>'
+    + (state.books.size? 'Add / rescan audiobook folder' : 'Choose audiobook folder') + '</button></div>';
+
+  if(state.books.size===0){
+    html += '<div class="empty" style="min-height:50vh;"><div class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div>'
+      + '<h2>No audiobooks yet</h2><p>Pick a folder that contains your audiobooks. Each sub-folder (or single audio file) becomes a book, and Reel remembers exactly where you stopped in each one.</p></div>';
+    el.innerHTML = html;
+    return;
+  }
+  for(const id of state.booksOrder){
+    const b = state.books.get(id); if(!b) continue;
+    const frac = bookProgressFraction(b);
+    const pct = Math.round(frac*100);
+    const badge = b.finished ? '<div class="badge">✓</div>' : (frac>0.001 ? '<div class="badge">'+pct+'%</div>':'');
+    html += '<div class="book-row" data-book="'+esc(b.id)+'">'
+      + '<div class="book-cover" data-book-cover="'+esc(b.id)+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>'+badge+'</div>'
+      + '<div class="book-main"><div class="book-title">'+esc(b.title)+'</div>'
+      + (b.author? '<div class="book-author">'+esc(b.author)+'</div>':'')
+      + '<div class="book-meta">'+(frac>0.001 && !b.finished ? 'Resume · ' : '')+esc(bookRemainingLabel(b))+'</div>'
+      + '<div class="book-prog"><span style="width:'+pct+'%;"></span></div>'
+      + '</div></div><div class="book-sep"></div>';
+  }
+  el.innerHTML = html;
+  lazyBookCovers(el);
+}
+
+/* lazy-load book cover images into their placeholders */
+function lazyBookCovers(container){
+  const nodes = container.querySelectorAll('[data-book-cover]');
+  nodes.forEach(async node=>{
+    const id = node.getAttribute('data-book-cover');
+    const b = state.books.get(id); if(!b) return;
+    const url = await bookCoverUrl(b);
+    if(url){ const img = new Image(); img.src = url; img.onload = ()=>{ const badge = node.querySelector('.badge'); node.innerHTML=''; node.appendChild(img); if(badge) node.appendChild(badge); }; }
+  });
+}
+
+const bookCoverCache = new Map(); // bookId -> url|null
+async function bookCoverUrl(b){
+  if(bookCoverCache.has(b.id)) return bookCoverCache.get(b.id);
+  let url = null;
+  try{
+    // 1) image file in the book's folder
+    const blob = await findBookFolderImage(b.folder);
+    if(blob){ url = URL.createObjectURL(blob); }
+    else {
+      // 2) embedded art in the first part (mp3)
+      const p0 = b.parts[0];
+      if(p0 && extOf(p0.name)==='mp3'){
+        let file = p0.file;
+        if(!file && p0.handle){ try{ file = await p0.handle.getFile(); }catch(e){} }
+        if(!file && state.booksDirHandle){ const fh = await walkPath(state.booksDirHandle, p0.path); if(fh){ try{ file = await fh.getFile(); }catch(e){} } }
+        if(file){
+          let head = await readHead(file, 96*1024);
+          const declared = id3DeclaredSize(head);
+          if(declared>head.byteLength && declared<3*1024*1024) head = await readHead(file, declared+16);
+          const art = parseArt(head);
+          if(art && art.blob) url = URL.createObjectURL(art.blob);
+        }
+      }
+    }
+  }catch(e){}
+  bookCoverCache.set(b.id, url);
+  return url;
+}
+async function findBookFolderImage(folder){
+  if(!state.booksDirHandle) return null;
+  try{
+    if(typeof state.booksDirHandle.queryPermission==='function'){
+      if((await state.booksDirHandle.queryPermission({mode:'read'}))!=='granted') return null;
+    }
+    const dir = await walkDirHandle(state.booksDirHandle, folder);
+    if(!dir) return null;
+    const cands = [];
+    for await (const entry of dir.values()){ if(entry.kind==='file' && isImage(entry.name)) cands.push(entry); }
+    if(!cands.length) return null;
+    cands.sort((a,b)=> coverNameScore(a.name)-coverNameScore(b.name) || a.name.localeCompare(b.name));
+    return await cands[0].getFile();
+  }catch(e){ return null; }
+}
+
+/* ---- resolve a part's File (permission-aware, mirrors fileForSong) ---- */
+async function fileForPart(part){
+  if(part.file){
+    try{ await part.file.slice(0,0).arrayBuffer(); return part.file; }catch(e){}
+  }
+  if(state.booksDirHandle && typeof state.booksDirHandle.queryPermission==='function'){
+    try{
+      let perm = await state.booksDirHandle.queryPermission({mode:'read'});
+      if(perm!=='granted'){ perm = await state.booksDirHandle.requestPermission({mode:'read'}); if(perm!=='granted') return null; }
+    }catch(e){}
+  }
+  if(part.handle){
+    try{ const f = await part.handle.getFile(); if(f){ part.file=f; return f; } }catch(e){}
+  }
+  if(state.booksDirHandle && part.path){
+    try{ const fh = await walkPath(state.booksDirHandle, part.path); if(fh){ part.handle=fh; const f = await fh.getFile(); if(f){ part.file=f; return f; } } }catch(e){}
+  }
+  return null;
+}
+
+/* ---- playback ---- */
+let pendingBookSeek = null; // seconds to seek to once metadata is ready
+
+async function playBook(bookId){
+  const b = state.books.get(bookId); if(!b || !b.parts.length) return;
+  state.mode = 'book';
+  state.currentBookId = bookId;
+  // if finished, restart from the beginning
+  let part = b.position.part||0, time = b.position.time||0;
+  if(b.finished){ part=0; time=0; b.finished=false; }
+  if(part>=b.parts.length){ part=0; time=0; }
+  Log.info('Playing audiobook "'+b.title+'" — resuming at chapter '+(part+1)+', '+Math.round(time)+'s');
+  await playBookPart(part, time, true);
+  b.lastPlayedAt = Date.now();
+  rebuildBooksOrder();
+  saveBooks();
+  openBookPlayer();
+}
+async function playBookPart(partIndex, seekTime, autoplay){
+  const b = state.books.get(state.currentBookId); if(!b) return;
+  if(partIndex<0) partIndex=0;
+  if(partIndex>=b.parts.length){ bookFinished(); return; }
+  state.currentPart = partIndex;
+  b.position = {part:partIndex, time:seekTime||0};
+  const part = b.parts[partIndex];
+  const file = await fileForPart(part);
+  if(!file){
+    Log.warn('Cannot open audiobook file for "'+b.title+'" chapter '+(partIndex+1)+' ('+part.path+')');
+    toastDone(state.booksDirHandle? 'Folder access needed — tap play again' : 'Can’t open this audiobook file', false, true);
+    return;
+  }
+  if(currentObjectUrl){ try{ URL.revokeObjectURL(currentObjectUrl); }catch(e){} }
+  currentObjectUrl = URL.createObjectURL(file);
+  pendingBookSeek = seekTime||0;
+  audio.src = currentObjectUrl;
+  audio.playbackRate = state.bookSpeed;
+  intentionalPause = false;
+  renderBookPlayer();
+  if(autoplay){
+    try{ await audio.play(); state.playing=true; }catch(e){ state.playing=false; Log.warn('Audiobook playback failed: '+(e&&e.message?e.message:e)); }
+  }
+  updatePlayButtons();
+  updateBookMediaSession();
+  updateBookMini();
+}
+function onBookMetadata(){
+  const b = state.books.get(state.currentBookId); if(!b) return;
+  const part = b.parts[state.currentPart];
+  if(part && audio.duration && isFinite(audio.duration)){
+    part.duration = audio.duration;
+  }
+  if(pendingBookSeek!=null && isFinite(audio.duration)){
+    try{ audio.currentTime = Math.min(pendingBookSeek, Math.max(0,(audio.duration||0)-1)); }catch(e){}
+    pendingBookSeek = null;
+  }
+  renderBookPlayer();
+  saveBooks();
+}
+function bookOnEnded(){
+  const b = state.books.get(state.currentBookId); if(!b) return;
+  // mark this part done and advance
+  if(state.currentPart+1 < b.parts.length){
+    Log.info('Audiobook "'+b.title+'" advancing to chapter '+(state.currentPart+2));
+    playBookPart(state.currentPart+1, 0, true);
+  }else{
+    bookFinished();
+  }
+}
+function bookFinished(){
+  const b = state.books.get(state.currentBookId); if(!b) return;
+  b.finished = true;
+  b.position = {part:0, time:0};
+  state.playing = false;
+  saveBooks();
+  updatePlayButtons();
+  renderBookPlayer();
+  if(state.view==='books') renderBooks();
+  Log.info('Finished audiobook "'+b.title+'"');
+  toastDone('Finished “'+b.title+'”');
+}
+function bookSkip(delta){
+  if(state.mode!=='book') return;
+  let t = (audio.currentTime||0) + delta;
+  const dur = audio.duration||0;
+  if(t < 0){
+    // roll into previous chapter if available
+    const b = state.books.get(state.currentBookId);
+    if(b && state.currentPart>0){ playBookPart(state.currentPart-1, Math.max(0, (b.parts[state.currentPart-1].duration||0)+t), true); return; }
+    t = 0;
+  }else if(dur && t > dur){
+    const over = t - dur;
+    const b = state.books.get(state.currentBookId);
+    if(b && state.currentPart+1 < b.parts.length){ playBookPart(state.currentPart+1, over, true); return; }
+    t = dur;
+  }
+  audio.currentTime = t;
+  saveBookProgress(true);
+  updateBookProgress();
+}
+function bookChapter(dir){
+  const b = state.books.get(state.currentBookId); if(!b) return;
+  const ni = state.currentPart + dir;
+  if(ni<0 || ni>=b.parts.length) return;
+  playBookPart(ni, 0, true);
+}
+function saveBookProgress(force){
+  const b = state.books.get(state.currentBookId); if(!b) return;
+  b.position = {part: state.currentPart, time: audio.currentTime||0};
+  if(force){ saveBooks(); }
+}
+let lastBookSaveT = 0;
+function updateBookProgress(){
+  const d = audio.duration||0, c = audio.currentTime||0;
+  const pct = d? (c/d*100):0;
+  const sf = $('bpSeekFill'), sk = $('bpSeekKnob');
+  if(sf) sf.style.width = pct+'%';
+  if(sk) sk.style.left = pct+'%';
+  const cur = $('bpCur'); if(cur) cur.textContent = fmtTime(c);
+  if(d){ const dd=$('bpDur'); if(dd) dd.textContent = fmtTime(d); }
+  // remaining across whole book
+  const b = state.books.get(state.currentBookId);
+  if(b){
+    const total = bookTotalDuration(b);
+    if(total){
+      let elapsed=0; for(let i=0;i<state.currentPart;i++) elapsed += (b.parts[i].duration||0);
+      elapsed += c;
+      const rem = Math.max(0, total-elapsed);
+      const r = $('bpRemain'); if(r) r.textContent = fmtLong(rem)+' left in book';
+    }
+  }
+  // mini bar progress
+  $('miniProg').style.width = pct+'%';
+  // throttled position save (every ~5s of playback)
+  const now = Date.now();
+  if(now - lastBookSaveT > 5000){ lastBookSaveT = now; saveBookProgress(false); saveBooks(); }
+  if('mediaSession' in navigator && d){ try{ navigator.mediaSession.setPositionState({duration:d, position:c, playbackRate:audio.playbackRate||1}); }catch(e){} }
+}
+function updateBookMini(){
+  const b = state.books.get(state.currentBookId);
+  const mini = $('mini');
+  if(!b){ mini.classList.remove('show'); return; }
+  mini.classList.add('show');
+  $('miniTitle').textContent = b.title;
+  $('miniSub').textContent = b.author || (b.parts.length>1? 'Chapter '+(state.currentPart+1) : 'Audiobook');
+  // swap mini next icon to a +30s glyph while in book mode
+  $('miniNext').innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m13 4 5 5-5 5"/><path d="M18 9H9a6 6 0 1 0 0 12h6"/></svg>';
+  bookCoverUrl(b).then(url=>{
+    const ma = $('miniArt');
+    if(url){ ma.innerHTML=''; const i=new Image(); i.src=url; ma.appendChild(i); }
+    else ma.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>';
+  });
+}
+function updateBookMediaSession(){
+  if(!('mediaSession' in navigator)) return;
+  const b = state.books.get(state.currentBookId); if(!b) return;
+  try{
+    const meta = { title:b.title, artist:b.author||'Audiobook', album: b.parts.length>1? 'Chapter '+(state.currentPart+1) : '' };
+    navigator.mediaSession.metadata = new MediaMetadata(meta);
+    navigator.mediaSession.setActionHandler('play', ()=>{ audio.play(); });
+    navigator.mediaSession.setActionHandler('pause', ()=>{ requestPause(); saveBookProgress(true); });
+    // lock-screen prev/next map to ±30s for audiobooks
+    navigator.mediaSession.setActionHandler('previoustrack', ()=>bookSkip(-30));
+    navigator.mediaSession.setActionHandler('nexttrack', ()=>bookSkip(30));
+    try{ navigator.mediaSession.setActionHandler('seekbackward', ()=>bookSkip(-30)); }catch(e){}
+    try{ navigator.mediaSession.setActionHandler('seekforward', ()=>bookSkip(30)); }catch(e){}
+    navigator.mediaSession.setActionHandler('seekto', (d)=>{ if(d.seekTime!=null){ audio.currentTime=d.seekTime; saveBookProgress(true);} });
+  }catch(e){}
+}
+
+/* ---- book player screen ---- */
+function openBookPlayer(){ $('bookPlayer').classList.add('open'); renderBookPlayer(); }
+function closeBookPlayer(){ $('bookPlayer').classList.remove('open'); }
+function renderBookPlayer(){
+  const b = state.books.get(state.currentBookId); if(!b) return;
+  $('bpTitle').textContent = b.title;
+  $('bpAuthor').textContent = b.author || '';
+  $('bpChapter').textContent = b.parts.length>1 ? ('Chapter '+(state.currentPart+1)+' of '+b.parts.length) : '';
+  $('bpChapCount').textContent = b.parts.length>1 ? (b.parts.length+' chapters') : 'Details';
+  $('bpSpeedTxt').textContent = state.bookSpeed.toFixed(1).replace(/\.0$/,'')+'×';
+  $('bpPrevChap').classList.toggle('disabled', state.currentPart<=0);
+  $('bpNextChap').classList.toggle('disabled', state.currentPart>=b.parts.length-1);
+  // cover
+  bookCoverUrl(b).then(url=>{
+    const cov = $('bpCover'), bg = $('bpBg');
+    if(url){ cov.innerHTML=''; const i=new Image(); i.src=url; cov.appendChild(i); bg.innerHTML=''; const i2=new Image(); i2.src=url; bg.appendChild(i2); }
+    else { cov.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>'; bg.innerHTML=''; }
+  });
+  updateBookProgress();
+  updatePlayButtons();
+}
+
+/* ---- chapter list sheet ---- */
+function openChaptersSheet(){
+  const b = state.books.get(state.currentBookId); if(!b) return;
+  if(b.parts.length<=1){ return; }
+  $('chapTitle').textContent = b.title;
+  let html='';
+  for(let i=0;i<b.parts.length;i++){
+    const p = b.parts[i];
+    const dur = p.duration? fmtTime(p.duration) : '';
+    const nm = cleanBookTitle((p.name||'').replace(/\.[^.]+$/,''));
+    html += '<button class="chap-item'+(i===state.currentPart?' cur':'')+'" data-chap="'+i+'">'
+      + '<span class="cn">'+(i+1)+'</span>'
+      + '<span class="ct">'+esc(nm)+'</span>'
+      + (dur? '<span class="cd">'+dur+'</span>':'')
+      + '</button>';
+  }
+  $('chapItems').innerHTML = html;
+  openSheet($('sheetChapters'));
+}
+
+/* ---- speed + sleep sheets (book) ---- */
+function openBookSpeedSheet(){
+  const opts = [0.75,1,1.1,1.25,1.5,1.75,2,2.5,3];
+  $('bookSpeedOpts').innerHTML = opts.map(v=>'<button class="opt'+(Math.abs(v-state.bookSpeed)<0.001?' sel':'')+'" data-bspeed="'+v+'">'+v.toFixed(2).replace(/0$/,'').replace(/\.$/,'')+'×</button>').join('');
+  openSheet($('sheetBookSpeed'));
+}
+function setBookSpeed(v){
+  state.bookSpeed = v;
+  if(state.mode==='book'){ try{ audio.playbackRate = v; }catch(e){} }
+  persistPrefs();
+  $('bpSpeedTxt').textContent = v.toFixed(1).replace(/\.0$/,'')+'×';
+}
+function openBookSleepSheet(){
+  const opts = [[0,'Off'],[10,'10m'],[15,'15m'],[30,'30m'],[45,'45m'],[60,'60m'],[-1,'End of chapter']];
+  $('bookSleepOpts').innerHTML = opts.map(([v,l])=>'<button class="opt'+(state.sleepMin===v?' sel':'')+'" data-bsleep="'+v+'">'+l+'</button>').join('');
+  openSheet($('sheetBookSleep'));
+}
+
+function wireAudiobooks(){
+  $('booksBack').addEventListener('click', ()=>switchView('playlists'));
+  // delegated clicks inside the books list (pick button + book rows)
+  $('booksBody').addEventListener('click', (e)=>{
+    if(e.target.closest('#booksPickBtn')){ pickBooksFolder(); return; }
+    const row = e.target.closest('[data-book]');
+    if(row){ playBook(row.getAttribute('data-book')); }
+  });
+  $('booksFolderInput').addEventListener('change', e=>{ handleBooksInput(e.target.files); e.target.value=''; });
+
+  // book player transport
+  $('bpBack').addEventListener('click', closeBookPlayer);
+  $('bpPlay').addEventListener('click', togglePlay);
+  $('bpBack30').addEventListener('click', ()=>bookSkip(-30));
+  $('bpFwd30').addEventListener('click', ()=>bookSkip(30));
+  $('bpPrevChap').addEventListener('click', ()=>bookChapter(-1));
+  $('bpNextChap').addEventListener('click', ()=>bookChapter(1));
+  $('bpChapters').addEventListener('click', openChaptersSheet);
+  $('bpSpeed').addEventListener('click', openBookSpeedSheet);
+  $('bpSleep').addEventListener('click', openBookSleepSheet);
+  bindDrag($('bpSeekTrack'), (clientX)=>{
+    const t=$('bpSeekTrack').getBoundingClientRect();
+    let pct=(clientX-t.left)/t.width; pct=Math.max(0,Math.min(1,pct));
+    if(audio.duration){ audio.currentTime = pct*audio.duration; saveBookProgress(true); updateBookProgress(); }
+  });
+
+  // chapter / speed / sleep sheet clicks
+  $('chapItems').addEventListener('click', e=>{ const b=e.target.closest('[data-chap]'); if(!b) return; closeSheet(); playBookPart(parseInt(b.getAttribute('data-chap'),10),0,true); });
+  $('bookSpeedOpts').addEventListener('click', e=>{ const b=e.target.closest('[data-bspeed]'); if(!b) return; setBookSpeed(parseFloat(b.getAttribute('data-bspeed'))); openBookSpeedSheet(); });
+  $('bookSleepOpts').addEventListener('click', e=>{ const b=e.target.closest('[data-bsleep]'); if(!b) return; const v=parseInt(b.getAttribute('data-bsleep'),10); setSleep(v===-1?-1:v); $('bpSleepTxt').textContent = v===0?'Sleep':(v===-1?'Chapter':v+'m'); closeSheet(); });
+}
+
+/* save book progress when app is hidden/closed */
+document.addEventListener('visibilitychange', ()=>{ if(document.hidden && state.mode==='book'){ saveBookProgress(true); } });
+window.addEventListener('pagehide', ()=>{ if(state.mode==='book') saveBookProgress(true); });
 
 boot();
 </script>

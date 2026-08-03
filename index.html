@@ -610,40 +610,57 @@
     .segbar{padding-bottom:0;}
     .play-random{margin:10px 16px 6px;height:56px;font-size:17px;}
 
-    /* Full-screen player in landscape:
-       - Player-top spans the whole top
-       - Art on the left, controls to the right in a two-column body
-    */
+    /* Full-screen player in landscape — bigger throughout, not smaller:
+       art sits fixed on the left, the entire right side is one large
+       controls column. The volume slider is hidden here (the phone's own
+       hardware volume buttons cover that) so the transport buttons that
+       actually matter while driving can be genuinely huge instead of
+       competing for the same limited vertical space. */
     .player{padding:calc(var(--safe-t) + 4px) 20px calc(var(--safe-b) + 8px);}
-    /* new grid: top row, then art | controls */
+
+    .player-top button{width:60px;height:60px;}
+    .player-top .player-back{height:60px;font-size:18px;}
+    .player-top .player-back svg{width:28px;height:28px;}
+    .player-top svg{width:30px;height:30px;}
+    .player-top .lbl{font-size:14px;}
+
     .player-art-wrap{
       height:auto;flex:0 0 auto;padding:0;
-      width:min(42vh, 44vw);align-self:stretch;
+      width:min(46vh, 40vw);align-self:stretch;
     }
-    .player-art{width:min(38vh, 40vw);height:min(38vh, 40vw);}
-    .player-art svg{width:56px;height:56px;}
+    .player-art{width:min(42vh, 36vw);height:min(42vh, 36vw);}
+    .player-art svg{width:64px;height:64px;}
 
     .player-controls{
-      position:absolute;left:calc(min(42vh, 44vw) + 32px);right:20px;
-      top:calc(var(--safe-t) + 62px);bottom:calc(var(--safe-b) + 12px);
-      justify-content:space-around;padding-top:0;gap:4px;
+      position:absolute;left:calc(min(46vh, 40vw) + 30px);right:20px;
+      top:calc(var(--safe-t) + 72px);bottom:calc(var(--safe-b) + 12px);
+      justify-content:space-around;padding-top:0;gap:6px;
     }
-    .player-title{font-size:26px;}
-    .player-artist{font-size:18px;margin-top:4px;}
-    .player-album{font-size:14px;margin-top:2px;}
+    .player-title{font-size:42px;}
+    .player-artist{font-size:25px;margin-top:5px;}
+    .player-album{font-size:19px;margin-top:2px;}
     .player-info{margin:0;}
-    .transport{margin:2px 0;}
-    .t-play{width:82px;height:82px;}
-    .t-play svg{width:40px;height:40px;}
-    .t-skip{width:68px;height:68px;border-radius:20px;}
-    .t-skip svg{width:38px;height:38px;}
-    .t-side{width:56px;height:56px;border-radius:18px;}
-    .t-side svg{width:28px;height:28px;}
-    .queue-btn{margin-top:2px;min-height:44px;}
-    .seek-times{margin-top:6px;font-size:13px;}
-    .seek-track{height:8px;}
-    .seek-knob{width:20px;height:20px;}
-    .vol-track{height:7px;}
+    .player-fav{width:64px;height:64px;}
+    .player-fav svg{width:34px;height:34px;}
+
+    .seek{margin:0;}
+    .seek-track{height:14px;}
+    .seek-knob{width:30px;height:30px;}
+    .seek-times{margin-top:8px;font-size:18px;}
+
+    .transport{margin:4px 0;}
+    .t-play{width:150px;height:150px;}
+    .t-play svg{width:70px;height:70px;}
+    .t-skip{width:120px;height:120px;border-radius:30px;}
+    .t-skip svg{width:62px;height:62px;}
+    .t-side{width:88px;height:88px;border-radius:24px;}
+    .t-side svg{width:42px;height:42px;}
+
+    .player-vol{display:none;}   /* use the phone's hardware volume buttons in landscape */
+
+    .queue-btn{margin-top:0;min-height:48px;font-size:16px;gap:8px;}
+    .queue-btn svg{width:20px;height:20px;}
+    .sleep-chip{font-size:14px;padding:7px 14px;margin-top:6px;}
 
     /* Detail hero can go wider */
     .detail-hero{padding:8px 20px 10px;}
@@ -653,6 +670,50 @@
     /* Nav slightly shorter in landscape */
     nav button{gap:3px;font-size:11px;}
     nav button svg{width:24px;height:24px;}
+
+    /* Audiobook player in landscape — same treatment as the music player:
+       cover art fixed on the left, big controls filling the right side. */
+    .bplayer{padding:calc(var(--safe-t) + 4px) 20px calc(var(--safe-b) + 8px);}
+    .bplayer-top button{width:60px;height:60px;}
+    .bplayer-back{height:60px;font-size:18px;}
+    .bplayer-back svg{width:28px;height:28px;}
+    .bplayer-chapbtn{height:60px;font-size:17px;}
+    .bplayer-chapbtn svg{width:24px;height:24px;}
+
+    .bcover-wrap{
+      height:auto;flex:0 0 auto;padding:0;
+      width:min(46vh, 40vw);align-self:stretch;justify-content:flex-start;
+    }
+    .bcover{width:min(42vh, 36vw);height:min(42vh, 36vw);}
+    .bcover svg{width:64px;height:64px;}
+
+    .bplayer-controls{
+      position:absolute;left:calc(min(46vh, 40vw) + 30px);right:20px;
+      top:calc(var(--safe-t) + 72px);bottom:calc(var(--safe-b) + 12px);
+      justify-content:space-around;padding-top:0;gap:6px;
+    }
+    .bplayer-title{font-size:42px;}
+    .bplayer-author{font-size:25px;margin-top:5px;}
+    .bplayer-chapter{font-size:19px;margin-top:2px;}
+
+    .bseek{margin:0;}
+    .bseek-track{height:14px;}
+    .bseek-knob{width:30px;height:30px;}
+    .bseek-times{margin-top:8px;font-size:18px;}
+    .bseek-remain{font-size:17px;margin-top:6px;}
+
+    .btransport{margin:4px 0;}
+    .bplay{width:150px;height:150px;}
+    .bplay svg{width:70px;height:70px;}
+    .bskip{width:120px;height:120px;border-radius:30px;}
+    .bskip svg{width:62px;height:62px;}
+    .bskip .num{font-size:18px;}
+    .bchap{width:88px;height:88px;border-radius:24px;}
+    .bchap svg{width:42px;height:42px;}
+
+    .bplayer-extra{margin-top:4px;gap:14px;}
+    .bchip{height:56px;font-size:18px;padding:0 22px;}
+    .bchip svg{width:24px;height:24px;}
   }
   /* ================= Audiobooks ================= */
   .books-scroll{overflow-y:auto;height:100%;padding-bottom:calc(var(--nav-h) + var(--mini-h) + 20px);}
@@ -1152,8 +1213,12 @@ const state = {
   ffEngineCached: false,
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '2.2.0';
+const APP_VERSION = '2.3.0';
 const CHANGELOG = [
+  { v:'2.3.0', date:'Aug 2, 2026', items:[
+    'Duplicate song warning: adding a song to a playlist it\'s already in (via a song\'s ••• menu → Add to playlist) now shows "Already in [playlist]" instead of silently removing it. Removing a song from a playlist is still available, deliberately, via that song\'s ••• menu from inside the playlist itself. The bulk "Add songs" picker keeps its check/uncheck toggle as-is, since that screen is built for fast multi-select curation.',
+    'Full-screen player (both music and audiobooks) now properly adapts to landscape: cover art fixed on the left, all the controls filling a much larger area on the right — with the title, transport buttons, and seek bar sized noticeably bigger than even portrait mode, since landscape has the width to spare. The volume slider is hidden in landscape in favor of bigger transport buttons — the phone\'s own hardware volume buttons cover that instead.',
+  ]},
   { v:'2.2.0', date:'Aug 2, 2026', items:[
     'New: automatic format conversion. WMA (and any other file Chrome can\'t decode) now plays — Reel runs a real audio decoder (FFmpeg, compiled to WebAssembly) on your device and converts the file automatically the moment you tap play. No steps to follow, nothing to configure.',
     'The conversion engine (~32MB) downloads once, the first time it\'s actually needed, and is cached on-device from then on — every future conversion, in every future session, works fully offline. You can also fetch it ahead of time from Settings → Advanced → Format conversion engine while on Wi-Fi.',
@@ -3438,12 +3503,23 @@ function onAddToClick(e){
   const pb = e.target.closest('[data-addpl]');
   if(pb){
     const plId = pb.getAttribute('data-addpl');
-    togglePlaylistSong(plId, addTargetId);
     const p = state.playlists.find(x=>x.id===plId);
-    const has = p.songIds.includes(addTargetId);
-    pb.classList.toggle('checked', has);
+    if(!p) return;
+    if(p.songIds.includes(addTargetId)){
+      // Tapping something that already looks "checked" reads as an attempt
+      // to add it again, not a request to remove it — warn instead of
+      // silently taking the song back out. Removing a song from a playlist
+      // is still available, deliberately, via that song's ••• menu inside
+      // the playlist itself ("Remove from playlist").
+      const song = state.library.get(addTargetId);
+      toastDone((song?'“'+song.title+'” already':'Already')+' in '+p.name, false, true);
+      Log.info('Duplicate add blocked: song already in "'+p.name+'"');
+      return;
+    }
+    togglePlaylistSong(plId, addTargetId);
+    pb.classList.add('checked');
     pb.querySelector('.si-sub').textContent = pluralize(p.songIds.length,'song');
-    toastDone(has? 'Added to '+p.name : 'Removed from '+p.name);
+    toastDone('Added to '+p.name);
   }
 }
 

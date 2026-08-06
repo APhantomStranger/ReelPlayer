@@ -247,6 +247,8 @@
 
   /* Playlists */
   .pl-actions{padding:16px 16px 8px;}
+  .pl-file-actions{display:flex;gap:12px;margin-top:12px;}
+  .pl-file-actions .btn-ghost{flex:1;}
   .btn-primary{
     display:flex;align-items:center;justify-content:center;gap:12px;width:100%;
     height:72px;border-radius:18px;background:var(--amber);color:#05140b;
@@ -912,7 +914,11 @@
     <!-- PLAYLISTS -->
     <section class="view" id="view-playlists" data-view="playlists">
       <div class="list-wrap"><div class="vlist scroll">
-        <div class="pl-actions"><button class="btn-primary" id="newPlaylistBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>New playlist</button></div>
+        <div class="pl-actions"><button class="btn-primary" id="newPlaylistBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>New playlist</button>
+        <div class="pl-file-actions">
+          <button class="btn-ghost" id="importPlaylistBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Import</button>
+          <button class="btn-ghost" id="backupPlaylistsBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Back up all</button>
+        </div></div>
         <div id="playlistsList"></div>
       </div></div>
     </section>
@@ -1137,6 +1143,7 @@
 <input type="file" id="folderInput" webkitdirectory directory multiple style="display:none">
 <input type="file" id="filesInput" accept="audio/*,.mp3,.wav,.m4a,.mp4,.aac,.ogg,.oga,.opus,.flac,.webm,.weba,.m4b,.aif,.aiff,.wma,.3gp,.3g2,.amr,.mka,.caf,.mp2,.mpga,.au,.spx" multiple style="display:none">
 <input type="file" id="booksFolderInput" webkitdirectory directory multiple style="display:none">
+<input type="file" id="playlistImportInput" accept=".json,application/json,.reel" style="display:none">
 
 <script>
 "use strict";
@@ -1213,8 +1220,14 @@ const state = {
   ffEngineCached: false,
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '2.3.0';
+const APP_VERSION = '2.4.0';
 const CHANGELOG = [
+  { v:'2.4.0', date:'Aug 2, 2026', items:[
+    'Playlists can now be saved to files and imported back. Each playlist\'s ••• menu has "Export / save to file" to write it out as a .json file. The Playlists tab has an "Import" button to rebuild a playlist from a file, and a "Back up all" button that saves every playlist into one file.',
+    'If a playlist gets deleted, just import its file to rebuild it. Songs are re-matched to your current library by id, then file path, then title/artist/album — so it rebuilds even if the library was re-imported. Any songs no longer in your library are reported but don\'t stop the rest from rebuilding.',
+    'Importing never overwrites an existing playlist — if the name is already taken, the imported copy is kept alongside it.',
+    'Files are plain JSON (readable, and it keeps Reel dependency-free), so they\'re easy to inspect, back up, or move between devices.',
+  ]},
   { v:'2.3.0', date:'Aug 2, 2026', items:[
     'Duplicate song warning: adding a song to a playlist it\'s already in (via a song\'s ••• menu → Add to playlist) now shows "Already in [playlist]" instead of silently removing it. Removing a song from a playlist is still available, deliberately, via that song\'s ••• menu from inside the playlist itself. The bulk "Add songs" picker keeps its check/uncheck toggle as-is, since that screen is built for fast multi-select curation.',
     'Full-screen player (both music and audiobooks) now properly adapts to landscape: cover art fixed on the left, all the controls filling a much larger area on the right — with the title, transport buttons, and seek bar sized noticeably bigger than even portrait mode, since landscape has the width to spare. The volume slider is hidden in landscape in favor of bigger transport buttons — the phone\'s own hardware volume buttons cover that instead.',
@@ -3362,6 +3375,9 @@ function wire(){
 
   // playlists
   $('newPlaylistBtn').addEventListener('click', ()=>{ editingPlaylistId=null; $('newSheetTitle').textContent='New playlist'; $('newPlaylistName').value=''; openSheet($('sheetNew')); setTimeout(()=>$('newPlaylistName').focus(),250); });
+  $('importPlaylistBtn').addEventListener('click', ()=>$('playlistImportInput').click());
+  $('backupPlaylistsBtn').addEventListener('click', backupAllPlaylists);
+  $('playlistImportInput').addEventListener('change', e=>{ if(e.target.files && e.target.files[0]) importPlaylistFile(e.target.files[0]); e.target.value=''; });
   $('newCancel').addEventListener('click', closeSheet);
   $('newCreate').addEventListener('click', ()=>{
     const name = $('newPlaylistName').value;
@@ -3531,6 +3547,7 @@ function openPlaylistMenu(plId){
     {act:'pl-play', icon:'<path d="M8 5v14l11-7z"/>', fill:true, label:'Play'},
     {act:'pl-shuffle', icon:'<polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/>', label:'Shuffle play'},
     {act:'pl-rename', icon:'<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/>', label:'Rename'},
+    {act:'pl-export', icon:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>', label:'Export / save to file'},
     {act:'pl-delete', icon:'<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>', label:'Delete playlist', danger:true},
   ];
   $('menuItems').innerHTML = items.map(it=>{
@@ -3547,11 +3564,115 @@ function openPlaylistMenu(plId){
     if(act==='pl-play'){ if(ids.length){ state.shuffle=false;$('btnShuffle').classList.remove('active'); playContext(ids,0); openPlayer(); } }
     else if(act==='pl-shuffle'){ if(ids.length){ state.shuffle=true;$('btnShuffle').classList.add('active'); playContext(ids,0); openPlayer(); } }
     else if(act==='pl-rename'){ editingPlaylistId=key; $('newSheetTitle').textContent='Rename playlist'; $('newPlaylistName').value=pl.name; openSheet($('sheetNew')); setTimeout(()=>$('newPlaylistName').select(),250); }
+    else if(act==='pl-export'){ exportPlaylist(key); }
     else if(act==='pl-delete'){ deletePlaylist(key); if(state.view==='detail') switchView('playlists'); else renderPlaylists(); }
     $('menuItems').removeEventListener('click', handler);
   };
   $('menuItems').addEventListener('click', handler);
   openSheet($('sheetMenu'));
+}
+
+/* ============================================================================
+   Playlist save / export / import  (JSON files)
+
+   JSON is used rather than XML/YAML because it's native to the browser — no
+   parser library, which keeps Reel dependency-free — and round-trips
+   reliably. Each song is stored with enough detail (id, path, size, plus
+   title/artist/album) that a playlist can be rebuilt even if the exact
+   internal id doesn't line up (e.g. re-imported library): on import each
+   song is matched against the current library by id first, then path+size,
+   then title/artist/album, then filename. Songs that aren't in the library
+   are reported but don't block the rest of the playlist from rebuilding.
+============================================================================ */
+function songExportEntry(id){
+  const s = state.library.get(id);
+  return s ? {id:s.id, path:s.path, name:s.name, size:s.size, title:s.title, artist:s.artist, album:s.album} : {id};
+}
+function playlistToObj(p){
+  return { name:p.name, songs:p.songIds.map(songExportEntry) };
+}
+function downloadJSON(obj, filename){
+  try{
+    const blob = new Blob([JSON.stringify(obj, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+    return true;
+  }catch(e){ Log.warn('Playlist file download failed: '+(e&&e.message?e.message:e)); return false; }
+}
+function safeFileName(name){
+  return (String(name||'playlist').replace(/[^\w\- ]+/g,'').trim().replace(/\s+/g,'-')) || 'playlist';
+}
+function exportPlaylist(plId){
+  const p = state.playlists.find(x=>x.id===plId); if(!p) return;
+  const obj = { reelPlaylist:true, version:1, app:'Reel', type:'playlist', exportedAt:new Date().toISOString(), playlist:playlistToObj(p) };
+  if(downloadJSON(obj, 'Reel-'+safeFileName(p.name)+'.json')){
+    Log.info('Exported playlist "'+p.name+'" ('+p.songIds.length+' songs)');
+    toastDone('Playlist saved to file');
+  }else{ toastDone('Couldn\u2019t save the file', false, true); }
+}
+function backupAllPlaylists(){
+  if(state.playlists.length===0){ toastDone('No playlists to back up yet', false, true); return; }
+  const obj = { reelPlaylist:true, version:1, app:'Reel', type:'backup', exportedAt:new Date().toISOString(), playlists: state.playlists.map(playlistToObj) };
+  if(downloadJSON(obj, 'Reel-playlists-backup.json')){
+    Log.info('Backed up '+state.playlists.length+' playlist(s) to file');
+    toastDone('Backed up '+pluralize(state.playlists.length,'playlist'));
+  }else{ toastDone('Couldn\u2019t save the backup', false, true); }
+}
+function matchSongToLibrary(entry){
+  if(!entry) return null;
+  if(entry.id && state.library.has(entry.id)) return entry.id;                 // 1. exact id
+  if(entry.path){                                                              // 2. path (+size)
+    for(const s of state.library.values()){
+      if(s.path===entry.path && (entry.size==null || s.size===entry.size)) return s.id;
+    }
+  }
+  if(entry.title){                                                             // 3. title+artist+album
+    const t=(entry.title||'').toLowerCase(), ar=(entry.artist||'').toLowerCase(), al=(entry.album||'').toLowerCase();
+    for(const s of state.library.values()){
+      if((s.title||'').toLowerCase()===t && (s.artist||'').toLowerCase()===ar && (s.album||'').toLowerCase()===al) return s.id;
+    }
+  }
+  if(entry.name){                                                              // 4. filename
+    for(const s of state.library.values()){ if(s.name===entry.name) return s.id; }
+  }
+  return null;
+}
+async function importPlaylistFile(file){
+  if(!file) return;
+  let obj;
+  try{ obj = JSON.parse(await file.text()); }
+  catch(e){ Log.warn('Playlist import: file is not valid JSON ('+e.message+')'); toastDone('That file isn\u2019t a valid playlist file', false, true); return; }
+  if(!obj || !obj.reelPlaylist){ toastDone('That file isn\u2019t a Reel playlist file', false, true); return; }
+  const lists = obj.type==='backup' ? (obj.playlists||[]) : (obj.playlist ? [obj.playlist] : []);
+  if(lists.length===0){ toastDone('No playlists found in that file', false, true); return; }
+  let importedCount=0, totalMatched=0, totalMissing=0, firstName='';
+  for(const pl of lists){
+    if(!pl || !pl.name) continue;
+    const ids=[]; let missing=0;
+    for(const entry of (pl.songs||[])){
+      const mid = matchSongToLibrary(entry);
+      if(mid){ if(!ids.includes(mid)) ids.push(mid); } else { missing++; }
+    }
+    // never clobber an existing playlist — if the name is taken, keep both
+    let name = pl.name;
+    if(state.playlists.some(x=>x.name===name)) name = name+' (imported)';
+    const np = createPlaylist(name);
+    np.songIds = ids;
+    persistPlaylists();
+    if(!firstName) firstName = name;
+    importedCount++; totalMatched+=ids.length; totalMissing+=missing;
+    Log.info('Imported playlist "'+name+'": '+ids.length+' matched, '+missing+' not in library');
+  }
+  if(importedCount===0){ toastDone('No playlists found in that file', false, true); return; }
+  if(state.view==='playlists') renderPlaylists();
+  const missTxt = totalMissing ? ', '+totalMissing+' not in your library' : '';
+  const msg = importedCount===1
+    ? 'Imported \u201c'+firstName+'\u201d — '+pluralize(totalMatched,'song')+missTxt
+    : 'Imported '+importedCount+' playlists — '+pluralize(totalMatched,'song')+missTxt;
+  toastDone(msg);
 }
 
 /* ---------- queue sheet ---------- */

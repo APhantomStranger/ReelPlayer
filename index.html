@@ -1220,8 +1220,12 @@ const state = {
   ffEngineCached: false,
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '2.4.0';
+const APP_VERSION = '2.5.0';
 const CHANGELOG = [
+  { v:'2.5.0', date:'Aug 2, 2026', items:[
+    'The "Add songs" picker (used when adding music to a playlist) is now always alphabetical by title, regardless of whatever sort the main Songs tab happens to be set to — it\'s a separate, guaranteed order rather than inheriting whatever you last picked elsewhere.',
+    'The main Songs tab is reset to alphabetical (Title) sort once as part of this update. It\'s a normal preference again afterward — the Artist / Album / Recently added options still work exactly as before if you switch to them.',
+  ]},
   { v:'2.4.0', date:'Aug 2, 2026', items:[
     'Playlists can now be saved to files and imported back. Each playlist\'s ••• menu has "Export / save to file" to write it out as a .json file. The Playlists tab has an "Import" button to rebuild a playlist from a file, and a "Back up all" button that saves every playlist into one file.',
     'If a playlist gets deleted, just import its file to rebuild it. Songs are re-matched to your current library by id, then file path, then title/artist/album — so it rebuilds even if the library was re-imported. Any songs no longer in your library are reported but don\'t stop the rest from rebuilding.',
@@ -2781,8 +2785,21 @@ function openAddToPlaylist(id){
    any other playlist it's already in.
 ============================================================================ */
 let bulkVList = null;
+let bulkAddOrderCache = null; // {libSize, order} — recomputed only when the library actually changes
+function bulkAddAlphabeticalOrder(){
+  // Always alphabetical here, regardless of whatever sort mode the main
+  // Songs tab happens to be set to (Title/Artist/Album/Recent) — this list
+  // exists purely to find a song quickly, so it should never depend on an
+  // unrelated setting elsewhere in the app.
+  if(bulkAddOrderCache && bulkAddOrderCache.libSize===state.library.size) return bulkAddOrderCache.order;
+  const arr = songsArray();
+  arr.sort((a,b)=>COLL.compare(a.title,b.title));
+  const order = arr.map(x=>x.id);
+  bulkAddOrderCache = {libSize:state.library.size, order};
+  return order;
+}
 function bulkAddFilteredIds(){
-  const base = state.order.length ? state.order : Array.from(state.library.keys());
+  const base = bulkAddAlphabeticalOrder();
   const q = (state.bulkAddSearch||'').trim().toLowerCase();
   if(!q) return base;
   const terms = q.split(/\s+/);
@@ -3745,6 +3762,19 @@ async function boot(){
       if(Array.isArray(prefs.eqGains) && prefs.eqGains.length===6) state.eqGains = prefs.eqGains.slice();
       if(Array.isArray(prefs.favorites)) state.favorites = prefs.favorites.slice();
       if(Array.isArray(prefs.recent)) state.recent = prefs.recent.slice();
+    }
+  }catch(e){}
+  // One-time reset to alphabetical (Title) sort, applied once on upgrade to
+  // this version so the Songs tab is alphabetical right away without
+  // requiring a manual tap — after this it's a normal preference again and
+  // won't keep resetting if a different sort is chosen later.
+  try{
+    const already = await DB.get('sortResetV24');
+    if(!already){
+      state.sort = 'title';
+      document.querySelectorAll('#segbar .seg').forEach(s=>s.classList.toggle('active', s.dataset.sort==='title'));
+      await DB.set('sortResetV24', true);
+      persistPrefs();
     }
   }catch(e){}
   state.favSet = new Set(state.favorites);

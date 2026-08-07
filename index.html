@@ -180,7 +180,7 @@
   .eq span:nth-child(3){animation-delay:.5s;height:11px;}
   @keyframes eq{0%,100%{height:7px}50%{height:24px}}
   .row-main{flex:1;min-width:0;}
-  .row-title{font-size:30px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .row-title{font-size:36px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .row.playing .row-title{color:var(--amber);}
   .row-sub{font-size:22px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:5px;}
   .row-dur{font-family:var(--mono);font-size:20px;color:var(--muted-2);flex:0 0 auto;letter-spacing:-.02em;font-variant-numeric:tabular-nums;}
@@ -829,15 +829,22 @@
     transition:transform .3s cubic-bezier(.32,.72,0,1), visibility 0s linear 0s;
     pointer-events:auto;visibility:visible;
   }
-  .bulkadd-top{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 20px 18px;}
-  .bulkadd-done{height:68px;padding:0 22px 0 14px;display:flex;align-items:center;gap:10px;color:var(--amber);font-weight:800;font-size:27px;border-radius:18px;flex:0 0 auto;}
-  .bulkadd-done svg{width:30px;height:30px;}
+  .bulkadd-top{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 20px 18px;}
+  .bulkadd-done{height:72px;padding:0 24px 0 16px;display:flex;align-items:center;gap:10px;color:var(--amber);font-weight:800;font-size:30px;border-radius:18px;flex:0 0 auto;}
+  .bulkadd-done svg{width:32px;height:32px;}
   .bulkadd-done:active{background:var(--surface-2);}
+  #bulkSearchBox{flex:0 0 auto;}
   .bulkadd-title{font-size:24px;font-weight:700;text-align:center;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .bulkadd-count{font-size:20px;color:var(--amber);font-weight:700;font-family:var(--mono);flex:0 0 auto;min-width:64px;text-align:right;}
   .bulk-check{width:40px;height:40px;border-radius:50%;border:2.5px solid var(--line-2);display:grid;place-items:center;flex:0 0 auto;color:transparent;transition:background .12s,border-color .12s;}
   .bulk-check svg{width:22px;height:22px;}
   .bulkrow.checked .bulk-check{background:var(--amber);border-color:var(--amber);color:#05140b;}
+  /* the whole row, not just the checkmark, signals "already in this
+     playlist" — a translucent tint in the app's accent color (green by
+     default) plus the title itself picking up that color. */
+  .bulkrow.checked{background:rgba(var(--accent-rgb),.18);}
+  .bulkrow.checked:active{background:rgba(var(--accent-rgb),.26);}
+  .bulkrow.checked .row-title{color:var(--amber);}
 
   /* chapter list reuses .sheet */
   .chap-item{display:flex;align-items:center;gap:16px;padding:20px 24px;width:100%;text-align:left;min-height:72px;}
@@ -934,7 +941,11 @@
       <div class="detail-top">
         <div class="back-bar"><button id="detailBack"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg><span id="detailBackLabel">Library</span></button></div>
         <div id="detailHeader"></div>
-        <div class="list-wrap"><div class="vlist scroll" id="detailList"><div class="vlist-inner"><div class="vlist-content"></div></div></div></div>
+        <div class="list-wrap">
+          <div class="vlist scroll" id="detailList"><div class="vlist-inner"><div class="vlist-content"></div></div></div>
+          <div class="az" id="detailAzRail"></div>
+          <div class="az-bubble" id="detailAzBubble"></div>
+        </div>
       </div>
     </section>
 
@@ -1086,7 +1097,7 @@
     <input type="text" id="bulkSearchInput" placeholder="Search your library" autocomplete="off">
     <button class="clear" id="bulkSearchClear" aria-label="Clear">×</button>
   </div>
-  <div class="vlist scroll" id="bulkAddList"><div class="vlist-inner"><div class="vlist-content"></div></div></div>
+  <div class="list-wrap"><div class="vlist scroll" id="bulkAddList"><div class="vlist-inner"><div class="vlist-content"></div></div></div></div>
 </div>
 
 <!-- Sheets -->
@@ -1226,8 +1237,16 @@ const state = {
   ffEngineCached: false,
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '2.6.0';
+const APP_VERSION = '2.7.1';
 const CHANGELOG = [
+  { v:'2.7.1', date:'Aug 2, 2026', items:[
+    'Fixed a real layout bug in the Add Songs picker: the scrollable song list wasn\'t contained correctly, so it could stretch up and cover the Back button and search box instead of sitting below them. The Back button is now genuinely fixed at the top — outside the scrolling area entirely, so it can\'t be scrolled past, covered, or lost no matter how far down the list you go — and sized to match the app\'s own header text.',
+  ]},
+  { v:'2.7.0', date:'Aug 2, 2026', items:[
+    'The A–Z fast-scroll rail (drag your finger down the letters on the right edge to jump straight there) now also works inside playlists, not just the main Songs list. Numbers and symbols still group under "#" at the top.',
+    'Song names are 20% bigger everywhere they appear in a list — the Songs tab, inside playlists, and the Add Songs picker.',
+    'Add Songs picker: a song already in the playlist now tints its whole row green (the app\'s accent color), not just the checkmark, so it\'s obvious at a glance which ones are already added.',
+  ]},
   { v:'2.6.0', date:'Aug 2, 2026', items:[
     'Redesigned the full-screen music player to fix the uneven empty gaps between controls: title/artist/album, the seek bar, transport buttons, volume, and Up Next are now grouped as one tightly-spaced cluster instead of being stretched apart to fill the screen.',
     'The Library back button is now much bigger and sits clearly on its own at the top, with real space between it and the album art below — art and text no longer crowd each other.',
@@ -2124,6 +2143,7 @@ function renderDetail(){
     if(inner) inner.style.height='auto';
     if(c) c.innerHTML = '<div style="padding:36px 24px;text-align:center;color:var(--muted);font-size:20px;line-height:1.6;">This playlist is empty. Tap <b style="color:var(--text);">Add songs</b> above to browse your library and start adding tracks.</div>';
   }
+  updateDetailAZ();
 }
 
 /* ============================================================================
@@ -2262,11 +2282,10 @@ function lazyArt(container){
    A–Z fast scroll rail
 ============================================================================ */
 const AZ_LETTERS = ['#','A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z'];
-function letterOf(s){
+function letterOf(s, field){
   let ch='';
-  if(state.sort==='artist') ch = (s.artist||'').trim()[0];
-  else if(state.sort==='album') ch = (s.album||'').trim()[0];
-  else ch = (s.title||'').trim()[0];
+  const f = field || (state.sort==='artist' ? 'artist' : state.sort==='album' ? 'album' : 'title');
+  ch = (s[f]||'').trim()[0];
   ch = (ch||'#').toUpperCase();
   return /[A-Z]/.test(ch) ? ch : '#';
 }
@@ -2291,6 +2310,39 @@ function jumpToLetter(letter){
   if(idx>=0 && songsVList){ songsVList.scrollToIndex(idx); }
   const b = $('azBubble'); b.textContent = letter; b.classList.add('show');
   clearTimeout(jumpToLetter._t); jumpToLetter._t = setTimeout(()=>b.classList.remove('show'), 550);
+}
+
+/* Same fast-scroll rail, applied to a playlist's song list (opened via the
+   Playlists tab). Always buckets by title — playlists don't have their own
+   sort mode — and jumps to the first song starting with that letter in
+   whatever order the playlist is currently in; it doesn't reorder the
+   playlist itself. */
+function updateDetailAZ(){
+  const rail = $('detailAzRail');
+  if(!rail) return;
+  if(!state.detail || state.detail.type!=='playlist' || state.detail.songIds.length<40){
+    rail.innerHTML=''; return;
+  }
+  const present = new Set();
+  for(const id of state.detail.songIds){
+    const s = state.library.get(id); if(s) present.add(letterOf(s,'title'));
+  }
+  const letters = AZ_LETTERS.filter(l=>present.has(l));
+  rail.innerHTML = letters.map(l=>'<button data-az="'+l+'">'+l+'</button>').join('');
+}
+function firstIndexForLetterDetail(letter){
+  const ids = state.detail.songIds;
+  for(let i=0;i<ids.length;i++){
+    const s = state.library.get(ids[i]);
+    if(s && letterOf(s,'title')===letter) return i;
+  }
+  return -1;
+}
+function jumpToLetterDetail(letter){
+  const idx = firstIndexForLetterDetail(letter);
+  if(idx>=0 && detailVList){ detailVList.scrollToIndex(idx); }
+  const b = $('detailAzBubble'); b.textContent = letter; b.classList.add('show');
+  clearTimeout(jumpToLetterDetail._t); jumpToLetterDetail._t = setTimeout(()=>b.classList.remove('show'), 550);
 }
 
 /* ============================================================================
@@ -3345,6 +3397,22 @@ function wire(){
   rail.addEventListener('touchstart', e=>{ azActive=true; azHandler(e.touches[0].clientY); e.preventDefault(); }, {passive:false});
   rail.addEventListener('touchmove', e=>{ if(azActive){ azHandler(e.touches[0].clientY); e.preventDefault(); } }, {passive:false});
   rail.addEventListener('touchend', ()=>{ azActive=false; });
+
+  // Same rail behaviour, for a playlist's song list
+  const detailRail = $('detailAzRail');
+  const detailAzHandler = (clientY)=>{
+    const btns = detailRail.querySelectorAll('button'); if(!btns.length) return;
+    const rect = detailRail.getBoundingClientRect();
+    let idx = Math.floor((clientY-rect.top)/rect.height*btns.length);
+    idx = Math.max(0, Math.min(btns.length-1, idx));
+    const letter = btns[idx].getAttribute('data-az');
+    if(letter) jumpToLetterDetail(letter);
+  };
+  detailRail.addEventListener('click', e=>{ const b=e.target.closest('[data-az]'); if(b) jumpToLetterDetail(b.getAttribute('data-az')); });
+  let detailAzActive=false;
+  detailRail.addEventListener('touchstart', e=>{ detailAzActive=true; detailAzHandler(e.touches[0].clientY); e.preventDefault(); }, {passive:false});
+  detailRail.addEventListener('touchmove', e=>{ if(detailAzActive){ detailAzHandler(e.touches[0].clientY); e.preventDefault(); } }, {passive:false});
+  detailRail.addEventListener('touchend', ()=>{ detailAzActive=false; });
 
   // mini player
   $('miniOpen').addEventListener('click', ()=>{ if(state.mode==='book') openBookPlayer(); else openPlayer(); });

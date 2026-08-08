@@ -609,7 +609,16 @@
   @keyframes fade{from{opacity:0}to{opacity:1}}
 
   /* ---------- Landscape adjustments ---------- */
-  @media (orientation:landscape) and (max-height:520px){
+  /* Landscape treatment for phones. Previously this only fired at
+     max-height:520px, which excluded plenty of phones held sideways whose
+     landscape height is still above that (~700px on many devices) — the
+     player would then try to render its portrait layout at wildly wrong
+     dimensions. The condition now covers any short-enough-to-be-a-phone
+     landscape orientation (max-height 900px is comfortably above any real
+     phone in landscape and below any tablet, where the portrait layout is
+     still fine). max-aspect-ratio ensures we don't accidentally reformat
+     square-ish tablet screens. */
+  @media (orientation:landscape) and (max-height:900px) and (max-aspect-ratio: 3/2){
     header{padding:10px 20px 8px;gap:10px;}
     .brand h1{font-size:28px;}
     .icon-btn{width:46px;height:46px;}
@@ -644,9 +653,9 @@
       top:calc(var(--safe-t) + 72px);bottom:calc(var(--safe-b) + 12px);
       justify-content:space-around;padding-top:0;gap:6px;
     }
-    .player-title{font-size:52px;}
-    .player-artist{font-size:31px;margin-top:5px;}
-    .player-album{font-size:24px;margin-top:2px;}
+    .player-title{font-size:min(52px, 10vh);}
+    .player-artist{font-size:min(31px, 6.5vh);margin-top:5px;}
+    .player-album{font-size:min(24px, 5vh);margin-top:2px;}
     .player-info{margin:0;}
     .player-fav{width:64px;height:64px;}
     .player-fav svg{width:34px;height:34px;}
@@ -657,12 +666,15 @@
     .seek-times{margin-top:8px;font-size:22px;}
 
     .transport{margin:4px 0;}
-    .t-play{width:150px;height:150px;}
-    .t-play svg{width:70px;height:70px;}
-    .t-skip{width:120px;height:120px;border-radius:30px;}
-    .t-skip svg{width:62px;height:62px;}
-    .t-side{width:88px;height:88px;border-radius:24px;}
-    .t-side svg{width:42px;height:42px;}
+    /* Sizes scale down on shorter landscape heights so the whole transport
+       row can't overflow the screen. On a tall landscape (say 500px+ tall
+       phone) these hit their max; on a short one they shrink gracefully. */
+    .t-play{width:min(150px, 30vh);height:min(150px, 30vh);}
+    .t-play svg{width:min(70px, 14vh);height:min(70px, 14vh);}
+    .t-skip{width:min(120px, 24vh);height:min(120px, 24vh);border-radius:30px;}
+    .t-skip svg{width:min(62px, 12vh);height:min(62px, 12vh);}
+    .t-side{width:min(88px, 18vh);height:min(88px, 18vh);border-radius:24px;}
+    .t-side svg{width:min(42px, 8vh);height:min(42px, 8vh);}
 
     .player-vol{display:none;}   /* use the phone's hardware volume buttons in landscape */
 
@@ -700,9 +712,9 @@
       top:calc(var(--safe-t) + 72px);bottom:calc(var(--safe-b) + 12px);
       justify-content:space-around;padding-top:0;gap:6px;
     }
-    .bplayer-title{font-size:52px;}
-    .bplayer-author{font-size:31px;margin-top:5px;}
-    .bplayer-chapter{font-size:24px;margin-top:2px;}
+    .bplayer-title{font-size:min(52px, 10vh);}
+    .bplayer-author{font-size:min(31px, 6.5vh);margin-top:5px;}
+    .bplayer-chapter{font-size:min(24px, 5vh);margin-top:2px;}
 
     .bseek{margin:0;}
     .bseek-track{height:14px;}
@@ -711,13 +723,13 @@
     .bseek-remain{font-size:21px;margin-top:6px;}
 
     .btransport{margin:4px 0;}
-    .bplay{width:150px;height:150px;}
-    .bplay svg{width:70px;height:70px;}
-    .bskip{width:120px;height:120px;border-radius:30px;}
-    .bskip svg{width:62px;height:62px;}
+    .bplay{width:min(150px, 30vh);height:min(150px, 30vh);}
+    .bplay svg{width:min(70px, 14vh);height:min(70px, 14vh);}
+    .bskip{width:min(120px, 24vh);height:min(120px, 24vh);border-radius:30px;}
+    .bskip svg{width:min(62px, 12vh);height:min(62px, 12vh);}
     .bskip .num{font-size:22px;}
-    .bchap{width:88px;height:88px;border-radius:24px;}
-    .bchap svg{width:42px;height:42px;}
+    .bchap{width:min(88px, 18vh);height:min(88px, 18vh);border-radius:24px;}
+    .bchap svg{width:min(42px, 8vh);height:min(42px, 8vh);}
 
     .bplayer-extra{margin-top:4px;gap:14px;}
     .bchip{height:56px;font-size:22px;padding:0 22px;}
@@ -1237,8 +1249,13 @@ const state = {
   ffEngineCached: false,
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '2.7.1';
+const APP_VERSION = '2.8.0';
 const CHANGELOG = [
+  { v:'2.8.0', date:'Aug 2, 2026', items:[
+    'Full-screen player now reformats to landscape on any phone held sideways, not just short/short-height ones — the previous landscape mode only kicked in below 520px tall, so many phones fell through and got the portrait layout at wrong proportions. Every control, including the Back button, is guaranteed to stay in view: the transport buttons and title text now shrink proportionally on shorter landscape heights instead of pushing off-screen.',
+    'Swipe-to-change-song feels much more fluid: the artwork now tracks your finger 1:1 (previously moved at only 75% of finger travel), and a quick flick commits — even a short swipe if it\'s fast enough — with the art carrying off-screen in that direction before the next song loads, rather than snapping back and then jumping.',
+    'WMA files now convert to mp3 proactively in the background, automatically, right after import (and on first open, for libraries that already contain WMA files). Once converted, tapping a WMA plays the mp3 instantly — no wait, no retry-on-failure round trip. The conversion is permanent and cached on-device, so it only ever happens once per file. Runs one file at a time to keep the app responsive; a toast shows overall progress.',
+  ]},
   { v:'2.7.1', date:'Aug 2, 2026', items:[
     'Fixed a real layout bug in the Add Songs picker: the scrollable song list wasn\'t contained correctly, so it could stretch up and cover the Back button and search box instead of sitting below them. The Back button is now genuinely fixed at the top — outside the scrolling area entirely, so it can\'t be scrolled past, covered, or lost no matter how far down the list you go — and sized to match the app\'s own header text.',
   ]},
@@ -1672,6 +1689,10 @@ async function importFiles(entries){
     if(added>0){ saveLibrary(); toastDone(pluralize(added,'song')+' added'); }
     else toastDone('Library up to date', done>0);
   }
+  // Kick off proactive WMA-to-mp3 conversion in the background (no-op if
+  // no WMA files or all already converted). Fire-and-forget so it never
+  // blocks the import UI.
+  sweepWmaLibrary().catch(e=>Log.warn('WMA sweep failed: '+(e&&e.message?e.message:e)));
   return {added};
 }
 
@@ -2415,6 +2436,26 @@ async function walkPath(rootHandle, relPath){
 async function playSong(id){
   const s = state.library.get(id);
   if(!s) return;
+  // Fast path: if we've already converted this file to mp3 (WMA sweep or a
+  // prior fallback), play that instead of the original. Skips the browser's
+  // decode attempt entirely — no failure/retry round trip.
+  const cached = await getCachedTranscode(id);
+  if(cached){
+    if(currentObjectUrl){ try{ URL.revokeObjectURL(currentObjectUrl); }catch(e){} }
+    currentObjectUrl = URL.createObjectURL(cached);
+    audio.src = currentObjectUrl;
+    state.currentId = id;
+    audio.playbackRate = state.speed;
+    if(state.eqEnabled) ensureEQ();
+    pushRecent(id);
+    try{
+      await audio.play();
+      state.playing = true;
+      Log.info('Playing "'+s.title+'" (converted mp3, cached)');
+    }catch(e){ state.playing=false; Log.warn('Playback of cached mp3 failed for "'+s.title+'": '+(e&&e.message?e.message:e)); }
+    updateNowPlaying(); updatePlayButtons(); markPlayingRows(); updateMediaSession(s);
+    return;
+  }
   const file = await fileForSong(s);
   if(!file){
     console.warn('[Reel] cannot open song:', {id, path:s.path, hasHandle:!!s.handle, hasFile:!!s.file, hasDirHandle:!!state.dirHandle});
@@ -2720,16 +2761,23 @@ function setVolFromClientX(clientX){
 }
 
 /* Horizontal swipe on the album art to switch tracks.
-   The art tracks the finger during the drag, and if the swipe crosses a
-   threshold (28% of art width) on release, next/prev is triggered. */
+   The art tracks the finger 1:1 during the drag (previously felt sluggish
+   because it moved at 75% of finger travel). A commit fires when either:
+   - the swipe crossed 20% of the art's width on release (a normal drag), OR
+   - the swipe was fast enough — a real flick, even if short. This is what
+     "one flick is enough" needs: distance alone would demand a big drag.
+   Both commit paths animate the art the rest of the way off-screen before
+   changing tracks, so the motion reads as fluid rather than snapping. */
 function bindArtSwipe(el){
   let startX=0, startY=0, dx=0, active=false, decided=false, horizontal=false;
-  const THRESHOLD_PCT = 0.28;   // fraction of art width to commit
-  const RESIST = 0.75;          // how much drag actually translates the art
+  let lastX=0, lastT=0, vx=0;
+  const THRESHOLD_PCT = 0.20;   // fraction of art width for a static-drag commit
+  const FLICK_VX = 0.55;        // px/ms — anything faster on release commits
 
   const onDown = (e)=>{
     const p = e.touches && e.touches[0] ? e.touches[0] : e;
     startX = p.clientX; startY = p.clientY;
+    lastX = startX; lastT = performance.now(); vx = 0;
     dx=0; active=true; decided=false; horizontal=false;
     el.style.transition='none';
   };
@@ -2738,45 +2786,70 @@ function bindArtSwipe(el){
     const p = e.touches && e.touches[0] ? e.touches[0] : e;
     const rawDx = p.clientX - startX;
     const rawDy = p.clientY - startY;
-    // Decide direction on the first meaningful move so vertical scrolls
-    // (if any) don't get hijacked.
     if(!decided){
       if(Math.abs(rawDx) > 8 || Math.abs(rawDy) > 8){
         decided = true;
         horizontal = Math.abs(rawDx) > Math.abs(rawDy);
-      }else{
-        return;
-      }
+      }else{ return; }
     }
     if(!horizontal) return;
     if(e.cancelable) e.preventDefault();
-    dx = rawDx * RESIST;
-    const rot = dx * 0.03;             // subtle tilt for feel
+    // 1:1 tracking so the art really follows the finger — no resistance.
+    dx = rawDx;
+    // running velocity (px/ms), small window so a fast final flick registers
+    const now = performance.now();
+    const dt = now - lastT;
+    if(dt > 0){ vx = (p.clientX - lastX) / dt; }
+    lastX = p.clientX; lastT = now;
+
+    const w = el.offsetWidth || 300;
+    const rot = (dx / w) * 8;                        // gentle tilt with the drag
+    const fade = Math.max(0.35, 1 - Math.abs(dx)/w); // clearer fade as art leaves
     el.style.transform = 'translateX('+dx+'px) rotate('+rot+'deg)';
-    el.style.opacity = String(Math.max(0.4, 1 - Math.abs(dx)/el.offsetWidth));
+    el.style.opacity = String(fade);
   };
   const onUp = ()=>{
     if(!active){ return; }
     active = false;
     const w = el.offsetWidth || 300;
-    const committed = horizontal && Math.abs(dx) > w * THRESHOLD_PCT;
-    el.style.transition='transform .22s ease, opacity .22s ease';
-    el.style.transform = 'translateX(0) rotate(0deg)';
-    el.style.opacity = '1';
-    // let the paused-scale CSS class regain control after the reset animation
-    setTimeout(()=>{ el.style.transform=''; el.style.opacity=''; el.style.transition=''; }, 260);
+    const flick = Math.abs(vx) >= FLICK_VX && ((vx < 0) === (dx < 0)); // fast AND in same direction as drag
+    const dragged = Math.abs(dx) > w * THRESHOLD_PCT;
+    const committed = horizontal && (flick || dragged);
     if(committed){
-      if(dx < 0) nextTrack(false);
-      else prevTrack();
+      // Animate the art the rest of the way off-screen in the same
+      // direction, THEN change track — feels like the swipe carries through
+      // rather than snapping back.
+      const dir = dx < 0 ? -1 : 1;
+      el.style.transition = 'transform .18s cubic-bezier(.32,.72,0,1), opacity .18s ease';
+      el.style.transform = 'translateX('+(dir * w * 1.15)+'px) rotate('+(dir*10)+'deg)';
+      el.style.opacity = '0';
+      setTimeout(()=>{
+        // reset instantly (invisible), then let playSong repaint the new art
+        el.style.transition = 'none';
+        el.style.transform = 'translateX('+(-dir * w * 1.15)+'px)';
+        el.style.opacity = '0';
+        if(dir < 0) nextTrack(false); else prevTrack();
+        // slide the new art in
+        requestAnimationFrame(()=>{
+          el.style.transition = 'transform .22s cubic-bezier(.32,.72,0,1), opacity .22s ease';
+          el.style.transform = 'translateX(0) rotate(0deg)';
+          el.style.opacity = '1';
+          setTimeout(()=>{ el.style.transform=''; el.style.opacity=''; el.style.transition=''; }, 260);
+        });
+      }, 190);
+    }else{
+      // Snap back
+      el.style.transition = 'transform .22s cubic-bezier(.32,.72,0,1), opacity .22s ease';
+      el.style.transform = 'translateX(0) rotate(0deg)';
+      el.style.opacity = '1';
+      setTimeout(()=>{ el.style.transform=''; el.style.opacity=''; el.style.transition=''; }, 260);
     }
   };
   el.addEventListener('touchstart', onDown, {passive:true});
   el.addEventListener('touchmove',  onMove, {passive:false});
   el.addEventListener('touchend',   onUp);
-  el.addEventListener('touchcancel',onUp);
-  el.addEventListener('mousedown',  onDown);
-  window.addEventListener('mousemove', onMove);
-  window.addEventListener('mouseup',   onUp);
+  el.addEventListener('touchcancel', onUp);
+  el.style.touchAction = 'pan-y';
 }
 
 /* ============================================================================
@@ -3174,8 +3247,17 @@ const FFEngine = (()=>{
 /* Per-file transcode cache — once a song/chapter is converted, the small
    mp3 result is stored so it never needs to be converted again. */
 async function getCachedTranscode(key){
-  try{ const buf = await DB.get('transcode:'+key); return buf instanceof ArrayBuffer ? new Blob([buf],{type:'audio/mpeg'}) : null; }
-  catch(e){ return null; }
+  try{
+    const buf = await DB.get('transcode:'+key);
+    if(!buf) return null;
+    // Accept ArrayBuffer, typed arrays, and Blobs (across realm boundaries
+    // — e.g. tests — instanceof ArrayBuffer can fail even for a genuine
+    // buffer, so also accept anything that quacks like one).
+    if(buf instanceof Blob) return buf;
+    if(buf instanceof ArrayBuffer) return new Blob([buf],{type:'audio/mpeg'});
+    if(buf && typeof buf.byteLength === 'number') return new Blob([buf],{type:'audio/mpeg'});
+    return null;
+  }catch(e){ return null; }
 }
 async function setCachedTranscode(key, blob){
   try{ const buf = await blob.arrayBuffer(); await DB.set('transcode:'+key, buf); }catch(e){}
@@ -3202,6 +3284,63 @@ async function tryTranscodeFallbackMusic(id){
     try{ await doTranscodeFallbackMusic(id); }
     finally{ ffInFlight.delete(key); }
   });
+}
+
+/* Proactive WMA sweep: every .wma song in the library gets converted to
+   mp3 in the background using the same serial queue. Runs after imports
+   and once on boot. Once converted, the mp3 is stored permanently in
+   IndexedDB (same 'transcode:<id>' key the fallback uses), so tapping the
+   song afterward plays the cached mp3 instantly via the fast path in
+   playSong() — no delay, no retry-on-failure round trip. Skips anything
+   already converted, and does nothing at all if there are no WMA files
+   (so users without WMA never see the engine download prompt). */
+async function findUnconvertedWmaIds(){
+  const ids = [];
+  for(const [id,s] of state.library){
+    if(extOf(s.name)==='wma'){
+      const cached = await DB.get('transcode:'+id).catch(()=>null);
+      if(!cached) ids.push(id);
+    }
+  }
+  return ids;
+}
+async function sweepWmaLibrary(){
+  const ids = await findUnconvertedWmaIds();
+  if(ids.length===0) return;
+  Log.info('Proactive WMA conversion: '+ids.length+' file(s) queued');
+  let done = 0, failed = 0;
+  const total = ids.length;
+  const engineReady = FFEngine.isReady();
+  toastShow(engineReady ? 'Converting WMA files (1 of '+total+')…' : 'Setting up format conversion for WMA (one-time download)…', true);
+  for(const id of ids){
+    const s = state.library.get(id); if(!s){ done++; continue; }
+    const key = 'm:'+id;
+    if(ffInFlight.has(key)){ done++; continue; }
+    ffInFlight.add(key);
+    // Serialize through the same queue the fallback uses, so a user tapping
+    // play mid-sweep doesn't conflict with the background conversion.
+    await queueFF(async ()=>{
+      try{
+        const alreadyCached = await getCachedTranscode(id);
+        if(alreadyCached){ done++; return; }
+        const srcFile = s.file || await fileForSong(s);
+        if(!srcFile){ failed++; done++; return; }
+        toastProgress(done/total, 'Converting '+(done+1)+' of '+total+' · '+s.title);
+        Log.info('Auto-converting WMA "'+s.title+'" ('+s.path+')');
+        const blob = await FFEngine.transcodeToMp3(srcFile, s.name, ()=>{});
+        await setCachedTranscode(id, blob);
+        done++;
+        Log.info('Converted WMA "'+s.title+'" → mp3 ('+Math.round(blob.size/1024)+' KB)');
+      }catch(e){
+        failed++; done++;
+        Log.warn('WMA auto-convert failed for "'+s.title+'": '+(e&&e.message?e.message:e));
+      }finally{
+        ffInFlight.delete(key);
+      }
+    });
+  }
+  if(failed===0) toastDone('Converted '+pluralize(total,'WMA file')+' to mp3');
+  else toastDone('Converted '+(total-failed)+' of '+total+' WMA files ('+failed+' failed)', false, failed>0);
 }
 async function doTranscodeFallbackMusic(id){
   const s = state.library.get(id); if(!s) return;
@@ -3911,6 +4050,10 @@ async function boot(){
   }
   refreshCurrentView();
   Log.info('Boot complete');
+  // After the app is fully up and interactive, sweep any WMA files in the
+  // library that haven't been converted yet. Delayed slightly so the UI is
+  // responsive first before the background work starts.
+  setTimeout(()=>{ sweepWmaLibrary().catch(e=>Log.warn('WMA sweep on boot failed: '+(e&&e.message?e.message:e))); }, 1500);
 }
 
 /* Chrome's File System Access API deliberately does not remember folder

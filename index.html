@@ -1247,10 +1247,25 @@ const state = {
   bulkAddSearch: '',
   // ---- FFmpeg WASM fallback (for formats the browser can't decode, e.g. WMA) ----
   ffEngineCached: false,
+  wmaStatus: {total:0, converted:0},
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '2.8.0';
+const APP_VERSION = '2.9.1';
 const CHANGELOG = [
+  { v:'2.9.1', date:'Aug 2, 2026', items:[
+    'The WMA converter was still failing on real devices — every conversion attempt died with "str.charCodeAt is not a function", coming from deep inside the FFmpeg engine\'s glue code with no other context in the log. This update wraps every step (worker start, script import, WASM instantiation, file write, exec, file read) with its own try/catch and detailed logging, so if a failure happens next time the debug log tells you exactly which step failed and what the argument types were. Also defensively coerces arguments to the correct types before handing them to the engine, which addresses the most likely cause.',
+    'The engine cache is now automatically cleared when initialization fails, so a bad cache from a previous session can\'t cause the same failure forever — the next attempt re-downloads fresh.',
+    'A file that fails to convert 3 times gets flagged so it won\'t be retried automatically every session (previously the log filled up with the same failures over and over). The "Convert all WMA to mp3" button in Settings → Advanced clears these flags and retries everything, if you want to try again after a fix.',
+    'Reminder: the debug log lives at Settings → Advanced → Debug log — it captures all app activity including every WMA conversion step. The "Save" button writes it to a real .txt file you can share to help diagnose issues.',
+  ]},
+  { v:'2.9.0', date:'Aug 2, 2026', items:[
+    'Fixed the WMA-to-mp3 converter, which was genuinely broken — my previous version pointed the WASM engine at the wrong configuration API for pointing to its own .wasm file, so instantiation could silently fail. Now the wasm bytes are handed to the engine directly, which is the mechanism the engine actually looks for.',
+    'The conversion engine\'s local cache is versioned, so devices that had bad/incomplete cached bytes from the previous version automatically re-fetch on next open — no manual cleanup needed.',
+    'Any previously-cached conversion results are also versioned, so bad output from the broken engine is thrown away and re-converted.',
+    'Added a manual "Convert all WMA to mp3" row in Settings → Advanced that shows how many files exist vs. how many are converted, and lets you retry the conversion sweep on demand instead of waiting for the automatic one.',
+    'Every step of the conversion — worker load, WASM instantiation, per-file start/success/failure, and any FFmpeg output — is now written to the debug log with real error messages and stack traces, so if a conversion fails you can see exactly why in Settings → Advanced → Debug log.',
+    'Reminder about the debug log (already there since v2.1.0): Settings → Advanced → Debug log has Copy, Save as .txt (writes a real text file to your device), and Clear. It records all app activity — imports, playback, playlist changes, audiobook activity, and any errors.',
+  ]},
   { v:'2.8.0', date:'Aug 2, 2026', items:[
     'Full-screen player now reformats to landscape on any phone held sideways, not just short/short-height ones — the previous landscape mode only kicked in below 520px tall, so many phones fell through and got the portrait layout at wrong proportions. Every control, including the Back button, is guaranteed to stay in view: the transport buttons and title text now shrink proportionally on shorter landscape heights instead of pushing off-screen.',
     'Swipe-to-change-song feels much more fluid: the artwork now tracks your finger 1:1 (previously moved at only 75% of finger travel), and a quick flick commits — even a short swipe if it\'s fast enough — with the art carrying off-screen in that direction before the next song loads, rather than snapping back and then jumping.',
@@ -1692,7 +1707,7 @@ async function importFiles(entries){
   // Kick off proactive WMA-to-mp3 conversion in the background (no-op if
   // no WMA files or all already converted). Fire-and-forget so it never
   // blocks the import UI.
-  sweepWmaLibrary().catch(e=>Log.warn('WMA sweep failed: '+(e&&e.message?e.message:e)));
+  sweepWmaLibrary().then(()=>refreshWmaStatus()).catch(e=>Log.warn('WMA sweep failed: '+(e&&e.message?e.message:e)));
   return {added};
 }
 
@@ -3154,43 +3169,94 @@ const FFEngine = (()=>{
   }
 
   async function loadCoreBytes(onProgress){
-    let jsText = await DB.get('ffCoreJS');
-    let wasmBuf = await DB.get('ffCoreWasm');
+    // Cache keys are versioned. If we ship a fix to how the engine is
+    // instantiated (as in v2.9.0 — the previous keys held bytes that were
+    // fine, but the *use* of them was buggy), bumping the suffix here
+    // effectively invalidates the old cache on affected devices without
+    // asking the user to do anything. Only affects the ~32MB one-time
+    // download, which redoes itself once.
+    let jsText = await DB.get('ffCoreJS_v2');
+    let wasmBuf = await DB.get('ffCoreWasm_v2');
     if(jsText && wasmBuf) return {jsText, wasmBuf, fromCache:true};
     onProgress && onProgress(0);
     const jsBuf = await fetchWithFallback(FF_JS_URLS, null);
     jsText = new TextDecoder().decode(jsBuf);
     wasmBuf = await fetchWithFallback(FF_WASM_URLS, onProgress);
-    try{ await DB.set('ffCoreJS', jsText); await DB.set('ffCoreWasm', wasmBuf); }catch(e){}
+    try{ await DB.set('ffCoreJS_v2', jsText); await DB.set('ffCoreWasm_v2', wasmBuf); }catch(e){}
     return {jsText, wasmBuf, fromCache:false};
   }
 
   // Minimal worker: loads ffmpeg-core.js (Emscripten glue) via importScripts,
-  // instantiates it with an explicit wasmURL (so it never tries to fetch the
-  // .wasm from a relative path next to itself — everything here is a Blob
-  // URL with no real filesystem behind it), then exposes just enough of the
-  // core's own FS/exec API to run one transcode at a time.
+  // then instantiates the WASM by passing the raw bytes directly via
+  // Module.wasmBinary. Every step is wrapped and logged so when a failure
+  // occurs — whether during importScripts, WASM instantiation, FS.writeFile,
+  // or exec — the debug log pinpoints the exact phase and the type of the
+  // argument that misbehaved (this is critical for diagnosing environment
+  // differences across browsers/devices).
   const WORKER_SRC = [
+    "self.__log = (m) => { try { self.postMessage({type:'log', msg: String(m)}); } catch(_){} };",
+    "self.__err = (label, e) => {",
+    "  const detail = (e && e.stack ? String(e.stack).split('\\n').slice(0,3).join(' | ') : (e && e.message ? e.message : String(e)));",
+    "  self.__log('ERROR at ' + label + ': ' + detail);",
+    "};",
     "self.onmessage = async (e) => {",
     "  const { id, cmd, args } = e.data;",
     "  try {",
     "    if (cmd === 'init') {",
-    "      importScripts(args.coreJsBlobURL);",
-    "      self.__core = await self.createFFmpegCore({",
-    "        mainScriptUrlOrBlob: args.coreJsBlobURL + '#' + btoa(JSON.stringify({wasmURL: args.wasmBlobURL, workerURL: ''})),",
-    "      });",
+    "      self.__log('worker: importing core glue from Blob URL');",
+    "      try { importScripts(args.coreJsBlobURL); }",
+    "      catch (impErr) { self.__err('importScripts', impErr); throw impErr; }",
+    "      if (typeof self.createFFmpegCore !== 'function') {",
+    "        self.__log('createFFmpegCore missing after importScripts; typeof=' + (typeof self.createFFmpegCore));",
+    "        throw new Error('createFFmpegCore not defined after importScripts');",
+    "      }",
+    "      self.__log('worker: core glue loaded; wasmBinary type=' + (args.wasmBinary && args.wasmBinary.constructor && args.wasmBinary.constructor.name) + ', byteLength=' + (args.wasmBinary && args.wasmBinary.byteLength));",
+    "      let core;",
+    "      try {",
+    "        core = await self.createFFmpegCore({",
+    "          wasmBinary: args.wasmBinary,",
+    "          locateFile: (p) => { self.__log('locateFile called for: ' + String(p)); return String(p); },",
+    "          print:    (m) => self.postMessage({type:'log', msg:'ffmpeg-out: '+String(m)}),",
+    "          printErr: (m) => self.postMessage({type:'log', msg:'ffmpeg-err: '+String(m)}),",
+    "        });",
+    "      } catch (initErr) { self.__err('createFFmpegCore', initErr); throw initErr; }",
+    "      self.__core = core;",
+    "      self.__log('worker: core ready; FS=' + (typeof core.FS) + ', exec=' + (typeof core.exec));",
     "      self.postMessage({id, ok:true});",
     "    } else if (cmd === 'transcode') {",
     "      const core = self.__core;",
-    "      core.FS.writeFile(args.inputName, args.inputBytes);",
-    "      const ret = core.exec(args.execArgs);",
-    "      if (ret !== 0) throw new Error('ffmpeg exit code ' + ret);",
-    "      const out = core.FS.readFile(args.outputName);",
-    "      try{ core.FS.unlink(args.inputName); }catch(_){}",
-    "      try{ core.FS.unlink(args.outputName); }catch(_){}",
+    "      if (!core) throw new Error('core not initialized when transcode requested');",
+    "      self.__log('worker: writeFile ' + args.inputName + ' (' + (args.inputBytes && args.inputBytes.byteLength) + ' bytes, type=' + (args.inputBytes && args.inputBytes.constructor && args.inputBytes.constructor.name) + ')');",
+    "      // Defensive: ensure inputBytes is a proper Uint8Array in this realm.",
+    "      // A transferred ArrayBuffer becomes a plain buffer here; wrapping it",
+    "      // in a fresh Uint8Array guarantees the .length/.set/.buffer surface",
+    "      // that FS.writeFile expects, regardless of what postMessage delivered.",
+    "      let bytes = args.inputBytes;",
+    "      if (bytes instanceof ArrayBuffer) bytes = new Uint8Array(bytes);",
+    "      else if (bytes && bytes.buffer && !(bytes instanceof Uint8Array)) bytes = new Uint8Array(bytes.buffer, bytes.byteOffset||0, bytes.byteLength);",
+    "      try { core.FS.writeFile(String(args.inputName), bytes); }",
+    "      catch (wErr) { self.__err('FS.writeFile', wErr); throw wErr; }",
+    "      self.__log('worker: exec ' + JSON.stringify(args.execArgs));",
+    "      // Defensive: coerce every arg to string; if any was accidentally",
+    "      // undefined/number, the glue's stringToPtr would blow up with the",
+    "      // exact 'str.charCodeAt is not a function' error.",
+    "      const safeArgs = args.execArgs.map(a => String(a));",
+    "      let ret;",
+    "      try { ret = core.exec(safeArgs); }",
+    "      catch (xErr) { self.__err('core.exec', xErr); throw xErr; }",
+    "      if (ret !== 0) throw new Error('ffmpeg exited with code ' + ret);",
+    "      let outView;",
+    "      try { outView = core.FS.readFile(String(args.outputName)); }",
+    "      catch (rErr) { self.__err('FS.readFile', rErr); throw rErr; }",
+    "      self.__log('worker: readFile ' + args.outputName + ' -> ' + outView.byteLength + ' bytes');",
+    "      const out = new Uint8Array(outView.byteLength);",
+    "      out.set(outView);",
+    "      try{ core.FS.unlink(String(args.inputName)); }catch(_){}",
+    "      try{ core.FS.unlink(String(args.outputName)); }catch(_){}",
     "      self.postMessage({id, ok:true, output: out.buffer}, [out.buffer]);",
     "    }",
     "  } catch (err) {",
+    "    self.__err('outer', err);",
     "    self.postMessage({id, ok:false, error: (err && err.message) || String(err)});",
     "  }",
     "};",
@@ -3209,23 +3275,60 @@ const FFEngine = (()=>{
   async function ensureReady(onProgress){
     if(readyPromise) return readyPromise;
     readyPromise = (async ()=>{
-      const {jsText, wasmBuf, fromCache} = await loadCoreBytes(onProgress);
-      Log.info('FFmpeg engine '+(fromCache?'loaded from local cache':'downloaded')+' — '+Math.round(wasmBuf.byteLength/1024/1024)+'MB');
+      try{
+        const {jsText, wasmBuf, fromCache} = await loadCoreBytes(onProgress);
+        Log.info('FFmpeg engine '+(fromCache?'loaded from local cache':'downloaded')+' — '+Math.round((wasmBuf.byteLength||wasmBuf.length||0)/1024/1024)+'MB, source type='+(wasmBuf.constructor && wasmBuf.constructor.name));
       const jsBlobURL = URL.createObjectURL(new Blob([jsText], {type:'text/javascript'}));
-      const wasmBlobURL = URL.createObjectURL(new Blob([wasmBuf], {type:'application/wasm'}));
       const workerBlobURL = URL.createObjectURL(new Blob([WORKER_SRC], {type:'text/javascript'}));
       worker = new Worker(workerBlobURL);
       worker.onmessage = (e)=>{
-        const {id, ok, output, error} = e.data;
+        const d = e.data;
+        if(d && d.type === 'log'){ Log.info('FFmpeg ' + d.msg); return; }
+        const {id, ok, output, error} = d;
         const p = pending.get(id); if(!p) return;
         pending.delete(id);
         if(ok) p.resolve(output); else p.reject(new Error(error));
       };
-      worker.onerror = (e)=>{ Log.error('FFmpeg worker error: '+(e&&e.message?e.message:e)); };
-      await send('init', {coreJsBlobURL:jsBlobURL, wasmBlobURL});
+      worker.onerror = (e)=>{ Log.error('FFmpeg worker onerror: '+(e && (e.message || e.filename+':'+e.lineno) || 'unknown')); };
+      worker.onmessageerror = (e)=>{ Log.error('FFmpeg worker onmessageerror (likely bad transfer): '+e); };
+      // wasmBuf may come back from IndexedDB as either an ArrayBuffer or a
+      // Uint8Array wrapper depending on the browser's structured-clone
+      // handling. Normalize to a real transferable ArrayBuffer so
+      // postMessage's transfer list works, and log the concrete type first
+      // so the debug log tells us what we're dealing with per device.
+      let wasmForTransfer;
+      if(wasmBuf instanceof ArrayBuffer){ wasmForTransfer = wasmBuf; }
+      else if(wasmBuf && wasmBuf.buffer instanceof ArrayBuffer){
+        // Uint8Array or similar view — extract underlying buffer
+        wasmForTransfer = wasmBuf.byteOffset===0 && wasmBuf.byteLength===wasmBuf.buffer.byteLength
+          ? wasmBuf.buffer
+          : wasmBuf.buffer.slice(wasmBuf.byteOffset, wasmBuf.byteOffset+wasmBuf.byteLength);
+      }else if(wasmBuf && typeof wasmBuf.byteLength === 'number'){
+        // Copy into a fresh ArrayBuffer as a last resort
+        const tmp = new Uint8Array(wasmBuf.byteLength);
+        tmp.set(new Uint8Array(wasmBuf.buffer || wasmBuf));
+        wasmForTransfer = tmp.buffer;
+      }else{
+        throw new Error('cached wasm bytes are the wrong type: '+(wasmBuf && wasmBuf.constructor && wasmBuf.constructor.name));
+      }
+      Log.info('FFmpeg engine: sending wasm to worker ('+Math.round(wasmForTransfer.byteLength/1024)+' KB, source type='+(wasmBuf.constructor && wasmBuf.constructor.name)+')');
+      await send('init', {coreJsBlobURL:jsBlobURL, wasmBinary:wasmForTransfer}, [wasmForTransfer]);
       state.ffEngineCached = true;
       if(state.view==='settings') renderSettings();
       Log.info('FFmpeg WASM engine ready');
+      }catch(setupErr){
+        // Reset so a later attempt (e.g. after re-fetching cached bytes)
+        // actually re-runs setup rather than returning the rejected promise
+        // forever. This is critical when the failure is transient (bad
+        // cached bytes on first try, working bytes on the retry).
+        Log.error('FFmpeg engine setup FAILED: '+(setupErr && setupErr.stack ? setupErr.stack.split('\n').slice(0,4).join(' | ') : (setupErr && setupErr.message) || setupErr));
+        readyPromise = null;
+        // Also blow away the (potentially corrupt) cached engine bytes so
+        // the next attempt re-downloads fresh instead of using the same bad
+        // cache and failing identically.
+        try{ await DB.set('ffCoreJS_v2', undefined); await DB.set('ffCoreWasm_v2', undefined); }catch(_){}
+        throw setupErr;
+      }
     })();
     return readyPromise;
   }
@@ -3248,7 +3351,7 @@ const FFEngine = (()=>{
    mp3 result is stored so it never needs to be converted again. */
 async function getCachedTranscode(key){
   try{
-    const buf = await DB.get('transcode:'+key);
+    const buf = await DB.get('transcode2:'+key);
     if(!buf) return null;
     // Accept ArrayBuffer, typed arrays, and Blobs (across realm boundaries
     // — e.g. tests — instanceof ArrayBuffer can fail even for a genuine
@@ -3260,7 +3363,7 @@ async function getCachedTranscode(key){
   }catch(e){ return null; }
 }
 async function setCachedTranscode(key, blob){
-  try{ const buf = await blob.arrayBuffer(); await DB.set('transcode:'+key, buf); }catch(e){}
+  try{ const buf = await blob.arrayBuffer(); await DB.set('transcode2:'+key, buf); }catch(e){}
 }
 
 /* Queue + per-item guard: the WASM engine can only run one job at a time,
@@ -3296,51 +3399,80 @@ async function tryTranscodeFallbackMusic(id){
    (so users without WMA never see the engine download prompt). */
 async function findUnconvertedWmaIds(){
   const ids = [];
+  const failCounts = (await DB.get('wmaFailCounts').catch(()=>null)) || {};
   for(const [id,s] of state.library){
     if(extOf(s.name)==='wma'){
-      const cached = await DB.get('transcode:'+id).catch(()=>null);
-      if(!cached) ids.push(id);
+      const cached = await DB.get('transcode2:'+id).catch(()=>null);
+      // Skip files that have already failed 3+ times — retrying every
+      // session floods the log and burns battery for no benefit; the user
+      // can force a retry from Settings if they want.
+      if(!cached && (failCounts[id]||0) < 3) ids.push(id);
     }
   }
   return ids;
 }
+async function countAllWma(){
+  let total=0, converted=0;
+  for(const [id,s] of state.library){
+    if(extOf(s.name)==='wma'){
+      total++;
+      const cached = await DB.get('transcode2:'+id).catch(()=>null);
+      if(cached) converted++;
+    }
+  }
+  return {total, converted};
+}
+async function refreshWmaStatus(){
+  state.wmaStatus = await countAllWma();
+  if(state.view==='settings') renderSettings();
+}
 async function sweepWmaLibrary(){
   const ids = await findUnconvertedWmaIds();
-  if(ids.length===0) return;
-  Log.info('Proactive WMA conversion: '+ids.length+' file(s) queued');
+  if(ids.length===0){ Log.info('WMA sweep: nothing to do (library has no unconverted WMA files)'); return {total:0, converted:0, failed:0}; }
+  Log.info('WMA sweep: '+ids.length+' file(s) queued for conversion');
   let done = 0, failed = 0;
   const total = ids.length;
   const engineReady = FFEngine.isReady();
+  const failCounts = (await DB.get('wmaFailCounts').catch(()=>null)) || {};
   toastShow(engineReady ? 'Converting WMA files (1 of '+total+')…' : 'Setting up format conversion for WMA (one-time download)…', true);
   for(const id of ids){
     const s = state.library.get(id); if(!s){ done++; continue; }
     const key = 'm:'+id;
     if(ffInFlight.has(key)){ done++; continue; }
     ffInFlight.add(key);
-    // Serialize through the same queue the fallback uses, so a user tapping
-    // play mid-sweep doesn't conflict with the background conversion.
     await queueFF(async ()=>{
       try{
         const alreadyCached = await getCachedTranscode(id);
         if(alreadyCached){ done++; return; }
         const srcFile = s.file || await fileForSong(s);
-        if(!srcFile){ failed++; done++; return; }
+        if(!srcFile){
+          failed++; done++;
+          failCounts[id] = (failCounts[id]||0) + 1;
+          Log.warn('WMA sweep: cannot access file for "'+s.title+'" ('+s.path+') — folder permission may need re-granting');
+          return;
+        }
         toastProgress(done/total, 'Converting '+(done+1)+' of '+total+' · '+s.title);
-        Log.info('Auto-converting WMA "'+s.title+'" ('+s.path+')');
+        Log.info('WMA sweep: starting "'+s.title+'" ('+s.path+', '+Math.round((srcFile.size||0)/1024)+' KB)');
         const blob = await FFEngine.transcodeToMp3(srcFile, s.name, ()=>{});
         await setCachedTranscode(id, blob);
         done++;
-        Log.info('Converted WMA "'+s.title+'" → mp3 ('+Math.round(blob.size/1024)+' KB)');
+        delete failCounts[id]; // clear any previous fail on success
+        Log.info('WMA sweep: converted "'+s.title+'" → mp3 ('+Math.round(blob.size/1024)+' KB)');
       }catch(e){
         failed++; done++;
-        Log.warn('WMA auto-convert failed for "'+s.title+'": '+(e&&e.message?e.message:e));
+        failCounts[id] = (failCounts[id]||0) + 1;
+        Log.error('WMA sweep FAILED for "'+s.title+'" (attempt '+failCounts[id]+'): ' + (e&&e.stack ? e.stack.split('\n').slice(0,3).join(' | ') : (e&&e.message||String(e))));
       }finally{
         ffInFlight.delete(key);
       }
     });
   }
+  try{ await DB.set('wmaFailCounts', failCounts); }catch(_){}
+  const summary = 'WMA sweep complete: '+(total-failed)+' converted, '+failed+' failed';
+  Log.info(summary);
   if(failed===0) toastDone('Converted '+pluralize(total,'WMA file')+' to mp3');
-  else toastDone('Converted '+(total-failed)+' of '+total+' WMA files ('+failed+' failed)', false, failed>0);
+  else toastDone('Converted '+(total-failed)+' of '+total+' WMA files — '+failed+' failed (see debug log)', false, true);
+  return {total, converted: total-failed, failed};
 }
 async function doTranscodeFallbackMusic(id){
   const s = state.library.get(id); if(!s) return;
@@ -3957,7 +4089,7 @@ async function boot(){
   Log.info('Reel v'+APP_VERSION+' booting — '+navigator.userAgent);
   // non-blocking: just checks IndexedDB for a previously-cached engine so
   // Settings can show accurate status; does not fetch anything itself
-  DB.get('ffCoreWasm').then(v=>{ state.ffEngineCached = !!v; if(state.view==='settings') renderSettings(); }).catch(()=>{});
+  DB.get('ffCoreWasm_v2').then(v=>{ state.ffEngineCached = !!v; if(state.view==='settings') renderSettings(); }).catch(()=>{});
   wire();
   setCapabilityNote();
   // load prefs
@@ -4053,7 +4185,10 @@ async function boot(){
   // After the app is fully up and interactive, sweep any WMA files in the
   // library that haven't been converted yet. Delayed slightly so the UI is
   // responsive first before the background work starts.
-  setTimeout(()=>{ sweepWmaLibrary().catch(e=>Log.warn('WMA sweep on boot failed: '+(e&&e.message?e.message:e))); }, 1500);
+  setTimeout(()=>{
+    refreshWmaStatus();
+    sweepWmaLibrary().then(()=>refreshWmaStatus()).catch(e=>Log.warn('WMA sweep on boot failed: '+(e&&e.message?e.message:e)));
+  }, 1500);
 }
 
 /* Chrome's File System Access API deliberately does not remember folder
@@ -4322,12 +4457,19 @@ function renderSettings(){
     + '</div>';
 
   // Advanced
+  const wma = state.wmaStatus || {total:0, converted:0};
+  const wmaText = wma.total===0
+    ? 'No WMA files in your library'
+    : (wma.converted===wma.total
+        ? 'All '+wma.total+' WMA files converted to mp3'
+        : wma.converted+' of '+wma.total+' converted · tap to convert the rest');
   html += '<div class="set-group"><h3>Advanced</h3><div class="set-card">'
     + '<button class="set-row" data-set="log"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></div><div class="sm"><div class="st">Debug log</div><div class="ss">'+Log.count()+' entries · actions, imports, playback &amp; errors</div></div>'+chev+'</button>'
     + '<button class="set-row" data-set="ffengine"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></div><div class="sm"><div class="st">Format conversion engine</div><div class="ss">'+(state.ffEngineCached ? 'Ready — WMA and other unsupported formats convert automatically' : 'Not downloaded yet — tap to fetch now (~32MB, one time, needs internet)') +'</div></div>'+chev+'</button>'
+    + '<button class="set-row" data-set="wma-convert"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></div><div class="sm"><div class="st">Convert all WMA to mp3</div><div class="ss">'+esc(wmaText)+'</div></div>'+chev+'</button>'
     + '</div>'
-    + '<div class="set-note">The log stays on your device and is never sent anywhere. Useful if something isn\'t working right and you want to see exactly what happened.</div>'
-    + '<div class="set-note" style="margin-top:10px;">Some formats (WMA especially) can\'t be played by any Chrome-based browser directly — there\'s no codec for it. The conversion engine works around this by converting those files on your device. It downloads automatically the first time it\'s needed, or you can fetch it ahead of time above while on Wi-Fi. Everything else about Reel stays fully offline.</div>'
+    + '<div class="set-note">The log stays on your device and is never sent anywhere. Useful if something isn\'t working right and you want to see exactly what happened — including any WMA conversion errors.</div>'
+    + '<div class="set-note" style="margin-top:10px;">WMA files can\'t be played by any Chrome-based browser directly (Chrome has never shipped a WMA codec), so Reel converts them to mp3 on your device using a real audio decoder. Conversions run automatically in the background after import; you can also trigger a sweep manually with the row above. Once a file has been converted the result is stored permanently, so playback afterward is instant.</div>'
     + '</div>';
 
   $('settingsBody').innerHTML = html;
@@ -4362,6 +4504,19 @@ function onSettingsClick(e){
         FFEngine.ensureReady((frac)=>toastProgress(frac, Math.round(frac*100)+'%'))
           .then(()=>{ toastDone('Ready — conversion engine downloaded'); renderSettings(); })
           .catch((e)=>{ Log.warn('Manual engine download failed: '+(e&&e.message?e.message:e)); toastDone('Download failed — check your connection', false, true); });
+      }
+    }
+    else if(a==='wma-convert'){
+      const st = state.wmaStatus||{total:0, converted:0};
+      if(st.total===0){ toastDone('No WMA files in your library', false); }
+      else if(st.converted===st.total){ toastDone('All WMA files are already converted', false); }
+      else{
+        // A manual retry means "try everything again", including files that
+        // hit the fail-count limit — so clear it before running.
+        DB.set('wmaFailCounts', {}).catch(()=>{});
+        sweepWmaLibrary()
+          .then(()=>refreshWmaStatus())
+          .catch((e)=>{ Log.error('Manual WMA sweep failed: '+(e&&e.stack?e.stack.split('\n').slice(0,3).join(' | '):e)); toastDone('Conversion had an error — see debug log', false, true); });
       }
     }
     return;

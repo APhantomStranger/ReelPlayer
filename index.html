@@ -1245,13 +1245,17 @@ const state = {
   // ---- bulk add songs to playlist ----
   bulkAddPlId: null,
   bulkAddSearch: '',
-  // ---- FFmpeg WASM fallback (for formats the browser can't decode, e.g. WMA) ----
-  ffEngineCached: false,
-  wmaStatus: {total:0, converted:0},
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '2.9.1';
+const APP_VERSION = '3.0.0';
 const CHANGELOG = [
+  { v:'3.0.0', date:'Aug 2, 2026', items:[
+    'Removed in-browser WMA-to-mp3 conversion entirely. Despite several rounds of fixes, it kept failing on real devices with an error deep inside the FFmpeg WebAssembly engine that couldn\'t be reliably resolved from within the browser. Rather than keep shipping a feature that didn\'t work, it\'s been taken out.',
+    'Tapping a WMA file now shows a clear message telling you to convert it to mp3 on a computer first (a free tool like VLC does this in a few clicks), instead of silently failing or retrying.',
+    'Settings → Advanced now shows how many WMA files are in your library (if any) with the same guidance, instead of a conversion engine that didn\'t work.',
+    'Reel is fully offline again, with no exceptions — the one deliberate network dependency the conversion engine introduced is gone.',
+    'The app is smaller and simpler as a result: no 32MB engine download, no background conversion queue, no conversion-related settings to manage.',
+  ]},
   { v:'2.9.1', date:'Aug 2, 2026', items:[
     'The WMA converter was still failing on real devices — every conversion attempt died with "str.charCodeAt is not a function", coming from deep inside the FFmpeg engine\'s glue code with no other context in the log. This update wraps every step (worker start, script import, WASM instantiation, file write, exec, file read) with its own try/catch and detailed logging, so if a failure happens next time the debug log tells you exactly which step failed and what the argument types were. Also defensively coerces arguments to the correct types before handing them to the engine, which addresses the most likely cause.',
     'The engine cache is now automatically cleared when initialization fails, so a bad cache from a previous session can\'t cause the same failure forever — the next attempt re-downloads fresh.',
@@ -1704,10 +1708,6 @@ async function importFiles(entries){
     if(added>0){ saveLibrary(); toastDone(pluralize(added,'song')+' added'); }
     else toastDone('Library up to date', done>0);
   }
-  // Kick off proactive WMA-to-mp3 conversion in the background (no-op if
-  // no WMA files or all already converted). Fire-and-forget so it never
-  // blocks the import UI.
-  sweepWmaLibrary().then(()=>refreshWmaStatus()).catch(e=>Log.warn('WMA sweep failed: '+(e&&e.message?e.message:e)));
   return {added};
 }
 
@@ -2451,24 +2451,12 @@ async function walkPath(rootHandle, relPath){
 async function playSong(id){
   const s = state.library.get(id);
   if(!s) return;
-  // Fast path: if we've already converted this file to mp3 (WMA sweep or a
-  // prior fallback), play that instead of the original. Skips the browser's
-  // decode attempt entirely — no failure/retry round trip.
-  const cached = await getCachedTranscode(id);
-  if(cached){
-    if(currentObjectUrl){ try{ URL.revokeObjectURL(currentObjectUrl); }catch(e){} }
-    currentObjectUrl = URL.createObjectURL(cached);
-    audio.src = currentObjectUrl;
-    state.currentId = id;
-    audio.playbackRate = state.speed;
-    if(state.eqEnabled) ensureEQ();
-    pushRecent(id);
-    try{
-      await audio.play();
-      state.playing = true;
-      Log.info('Playing "'+s.title+'" (converted mp3, cached)');
-    }catch(e){ state.playing=false; Log.warn('Playback of cached mp3 failed for "'+s.title+'": '+(e&&e.message?e.message:e)); }
-    updateNowPlaying(); updatePlayButtons(); markPlayingRows(); updateMediaSession(s);
+  // WMA short-circuit: Chrome can't decode WMA at all, so instead of
+  // attempting playback and letting the browser show its opaque
+  // "unsupported format" error, tell the user plainly what to do.
+  if(isWmaFile(s.name || s.path)){
+    Log.info('Skipping WMA (not supported): "'+s.title+'" ('+s.path+')');
+    toastDone('WMA can\u2019t be played in the browser \u2014 convert to mp3 on a computer first', false, true);
     return;
   }
   const file = await fileForSong(s);
@@ -2494,19 +2482,10 @@ async function playSong(id){
     state.playing = true;
     Log.info('Playing "'+s.title+'" by '+s.artist);
   }catch(e){
-    // Some codecs (WMA in particular) are unsupported by this browser.
-    // NotSupportedError specifically means the format/codec is the problem
-    // (as opposed to e.g. NotAllowedError from autoplay policy, or
-    // AbortError from a rapid track skip) — that's exactly the case the
-    // FFmpeg WASM fallback can help with, so try it automatically.
     state.playing = false;
     const name = e && e.name;
     Log.warn('Native playback failed for "'+s.title+'" ('+s.path+'): '+(name||e));
-    if(name==='NotSupportedError'){
-      tryTranscodeFallbackMusic(id);
-    }else{
-      toastDone('This format isn’t supported here', false, true);
-    }
+    toastDone('This format isn’t supported here', false, true);
   }
   updateNowPlaying();
   updatePlayButtons();
@@ -2640,30 +2619,23 @@ const MEDIA_ERROR_NAMES = {1:'aborted',2:'network error',3:'decode error (unsupp
 audio.addEventListener('error', ()=>{
   // Some formats (WMA in particular — Chrome has never shipped a WMA
   // decoder, on Android or anywhere else) can fail to decode without
-  // audio.play() ever rejecting; the failure only shows up here. Error
-  // codes 3 (decode) and 4 (format not supported) are genuine codec
-  // problems — exactly what the FFmpeg WASM fallback can fix automatically.
-  // Codes 1 (aborted) and 2 (network) aren't format issues, so they get a
-  // direct message instead of a pointless conversion attempt.
+  // audio.play() ever rejecting; the failure only shows up here. There's
+  // no in-browser fix for this (see isWmaFile / playSong for the WMA
+  // short-circuit that catches most of these before they even get here) —
+  // this handler just reports clearly what happened instead of leaving
+  // the player stuck with no feedback.
   const err = audio.error;
   const code = err ? err.code : 0;
   const reason = err ? (MEDIA_ERROR_NAMES[code]||('error code '+code)) : 'unknown error';
-  const looksLikeFormatIssue = (code===3 || code===4);
   if(state.mode==='book'){
     const b = state.books.get(state.currentBookId);
     Log.warn('Audiobook playback error'+(b?' — "'+b.title+'"':'')+': '+reason);
-    if(state.currentBookId){
-      if(looksLikeFormatIssue) tryTranscodeFallbackBook();
-      else{ state.playing=false; updatePlayButtons(); toastDone('This audiobook file format isn’t supported here', false, true); }
-    }
+    if(state.currentBookId){ state.playing=false; updatePlayButtons(); toastDone('This audiobook file format isn’t supported here', false, true); }
     return;
   }
   const s = state.library.get(state.currentId);
   Log.warn('Playback error'+(s?' — "'+s.title+'"':'')+': '+reason);
-  if(state.currentId){
-    if(looksLikeFormatIssue) tryTranscodeFallbackMusic(state.currentId);
-    else{ state.playing=false; updatePlayButtons(); toastDone('This format isn’t supported here', false, true); }
-  }
+  if(state.currentId){ state.playing=false; updatePlayButtons(); toastDone('This format isn’t supported here', false, true); }
 });
 
 function updateProgress(){
@@ -3101,455 +3073,24 @@ function toastDone(msg, isEmpty, isWarn){
 }
 
 /* ============================================================================
-   FFmpeg (WebAssembly) playback fallback.
+   WMA playback: honest not-supported handling.
 
-   Some formats — WMA above all — cannot be decoded by Chrome on any
-   platform, because Chrome has never shipped a WMA codec. There is no way
-   for a web app to add a missing browser codec. What CAN be done: run a
-   real decoder (FFmpeg, compiled to WebAssembly) inside the page itself,
-   and transcode the file to mp3 before handing it to <audio>.
+   Chrome has never shipped a WMA decoder on any platform, so WMA files
+   cannot be played by any web-based music player. Reel used to attempt
+   in-browser conversion via FFmpeg WebAssembly, but that approach proved
+   unreliable on real devices — see the app changelog for details. The
+   conversion code has been removed in favor of a clear message telling
+   the user to convert their WMA files to mp3 on a computer first (a free
+   tool like VLC does this in a few clicks).
 
-   Design:
-   - The ~32MB FFmpeg engine (@ffmpeg/core, single-threaded — this avoids
-     the SharedArrayBuffer/cross-origin-isolation headers that the
-     multi-threaded build requires and that a static file can't set) is
-     fetched from a CDN ONLY the first time it's actually needed, then
-     cached as raw bytes in IndexedDB so every future use — including in
-     later sessions — is fully offline. This is the one deliberate
-     exception to Reel otherwise making zero network requests; everything
-     else about the app remains 100% offline.
-   - We talk to ffmpeg-core.js directly with a small worker written here
-     (rather than pulling in the @ffmpeg/ffmpeg wrapper package), because
-     that wrapper's worker-loading strategy depends on relative ES-module
-     imports that don't resolve once everything is running from Blob URLs
-     with no real file structure behind them. Driving ffmpeg-core.js's own
-     documented API (FS.writeFile/exec/FS.readFile) directly sidesteps that
-     entirely and needs far less code.
-   - Automatic + transparent: playback failures that look like a genuine
-     format/codec problem trigger this fallback on their own — the user
-     just taps play. A converted copy of each song is cached (as a small
-     mp3) so the SAME song never needs to be converted twice.
+   Everything below is what remains: a small isWmaFile helper used by
+   playSong/playBookPart to short-circuit with a helpful message instead
+   of the browser's opaque "format not supported" error.
 ============================================================================ */
-const FF_CORE_VERSION = '0.12.10';
-const FF_JS_URLS = [
-  'https://cdn.jsdelivr.net/npm/@ffmpeg/core@'+FF_CORE_VERSION+'/dist/umd/ffmpeg-core.js',
-  'https://unpkg.com/@ffmpeg/core@'+FF_CORE_VERSION+'/dist/umd/ffmpeg-core.js',
-];
-const FF_WASM_URLS = [
-  'https://cdn.jsdelivr.net/npm/@ffmpeg/core@'+FF_CORE_VERSION+'/dist/umd/ffmpeg-core.wasm',
-  'https://unpkg.com/@ffmpeg/core@'+FF_CORE_VERSION+'/dist/umd/ffmpeg-core.wasm',
-];
-
-const FFEngine = (()=>{
-  let worker=null, readyPromise=null, msgId=0;
-  const pending = new Map();
-
-  async function fetchWithFallback(urls, onProgress){
-    let lastErr=null;
-    for(const url of urls){
-      try{
-        const resp = await fetch(url);
-        if(!resp.ok) throw new Error('HTTP '+resp.status);
-        if(!resp.body || !onProgress) return await resp.arrayBuffer();
-        const total = parseInt(resp.headers.get('content-length')||'0',10);
-        const reader = resp.body.getReader();
-        let received=0; const chunks=[];
-        while(true){
-          const {done,value} = await reader.read();
-          if(done) break;
-          chunks.push(value); received += value.length;
-          if(total) onProgress(received/total);
-        }
-        const out = new Uint8Array(received); let off=0;
-        for(const c of chunks){ out.set(c,off); off+=c.length; }
-        return out.buffer;
-      }catch(e){ lastErr=e; console.warn('FFmpeg engine source unreachable: '+url, e); }
-    }
-    throw lastErr || new Error('all sources unreachable');
-  }
-
-  async function loadCoreBytes(onProgress){
-    // Cache keys are versioned. If we ship a fix to how the engine is
-    // instantiated (as in v2.9.0 — the previous keys held bytes that were
-    // fine, but the *use* of them was buggy), bumping the suffix here
-    // effectively invalidates the old cache on affected devices without
-    // asking the user to do anything. Only affects the ~32MB one-time
-    // download, which redoes itself once.
-    let jsText = await DB.get('ffCoreJS_v2');
-    let wasmBuf = await DB.get('ffCoreWasm_v2');
-    if(jsText && wasmBuf) return {jsText, wasmBuf, fromCache:true};
-    onProgress && onProgress(0);
-    const jsBuf = await fetchWithFallback(FF_JS_URLS, null);
-    jsText = new TextDecoder().decode(jsBuf);
-    wasmBuf = await fetchWithFallback(FF_WASM_URLS, onProgress);
-    try{ await DB.set('ffCoreJS_v2', jsText); await DB.set('ffCoreWasm_v2', wasmBuf); }catch(e){}
-    return {jsText, wasmBuf, fromCache:false};
-  }
-
-  // Minimal worker: loads ffmpeg-core.js (Emscripten glue) via importScripts,
-  // then instantiates the WASM by passing the raw bytes directly via
-  // Module.wasmBinary. Every step is wrapped and logged so when a failure
-  // occurs — whether during importScripts, WASM instantiation, FS.writeFile,
-  // or exec — the debug log pinpoints the exact phase and the type of the
-  // argument that misbehaved (this is critical for diagnosing environment
-  // differences across browsers/devices).
-  const WORKER_SRC = [
-    "self.__log = (m) => { try { self.postMessage({type:'log', msg: String(m)}); } catch(_){} };",
-    "self.__err = (label, e) => {",
-    "  const detail = (e && e.stack ? String(e.stack).split('\\n').slice(0,3).join(' | ') : (e && e.message ? e.message : String(e)));",
-    "  self.__log('ERROR at ' + label + ': ' + detail);",
-    "};",
-    "self.onmessage = async (e) => {",
-    "  const { id, cmd, args } = e.data;",
-    "  try {",
-    "    if (cmd === 'init') {",
-    "      self.__log('worker: importing core glue from Blob URL');",
-    "      try { importScripts(args.coreJsBlobURL); }",
-    "      catch (impErr) { self.__err('importScripts', impErr); throw impErr; }",
-    "      if (typeof self.createFFmpegCore !== 'function') {",
-    "        self.__log('createFFmpegCore missing after importScripts; typeof=' + (typeof self.createFFmpegCore));",
-    "        throw new Error('createFFmpegCore not defined after importScripts');",
-    "      }",
-    "      self.__log('worker: core glue loaded; wasmBinary type=' + (args.wasmBinary && args.wasmBinary.constructor && args.wasmBinary.constructor.name) + ', byteLength=' + (args.wasmBinary && args.wasmBinary.byteLength));",
-    "      let core;",
-    "      try {",
-    "        core = await self.createFFmpegCore({",
-    "          wasmBinary: args.wasmBinary,",
-    "          locateFile: (p) => { self.__log('locateFile called for: ' + String(p)); return String(p); },",
-    "          print:    (m) => self.postMessage({type:'log', msg:'ffmpeg-out: '+String(m)}),",
-    "          printErr: (m) => self.postMessage({type:'log', msg:'ffmpeg-err: '+String(m)}),",
-    "        });",
-    "      } catch (initErr) { self.__err('createFFmpegCore', initErr); throw initErr; }",
-    "      self.__core = core;",
-    "      self.__log('worker: core ready; FS=' + (typeof core.FS) + ', exec=' + (typeof core.exec));",
-    "      self.postMessage({id, ok:true});",
-    "    } else if (cmd === 'transcode') {",
-    "      const core = self.__core;",
-    "      if (!core) throw new Error('core not initialized when transcode requested');",
-    "      self.__log('worker: writeFile ' + args.inputName + ' (' + (args.inputBytes && args.inputBytes.byteLength) + ' bytes, type=' + (args.inputBytes && args.inputBytes.constructor && args.inputBytes.constructor.name) + ')');",
-    "      // Defensive: ensure inputBytes is a proper Uint8Array in this realm.",
-    "      // A transferred ArrayBuffer becomes a plain buffer here; wrapping it",
-    "      // in a fresh Uint8Array guarantees the .length/.set/.buffer surface",
-    "      // that FS.writeFile expects, regardless of what postMessage delivered.",
-    "      let bytes = args.inputBytes;",
-    "      if (bytes instanceof ArrayBuffer) bytes = new Uint8Array(bytes);",
-    "      else if (bytes && bytes.buffer && !(bytes instanceof Uint8Array)) bytes = new Uint8Array(bytes.buffer, bytes.byteOffset||0, bytes.byteLength);",
-    "      try { core.FS.writeFile(String(args.inputName), bytes); }",
-    "      catch (wErr) { self.__err('FS.writeFile', wErr); throw wErr; }",
-    "      self.__log('worker: exec ' + JSON.stringify(args.execArgs));",
-    "      // Defensive: coerce every arg to string; if any was accidentally",
-    "      // undefined/number, the glue's stringToPtr would blow up with the",
-    "      // exact 'str.charCodeAt is not a function' error.",
-    "      const safeArgs = args.execArgs.map(a => String(a));",
-    "      let ret;",
-    "      try { ret = core.exec(safeArgs); }",
-    "      catch (xErr) { self.__err('core.exec', xErr); throw xErr; }",
-    "      if (ret !== 0) throw new Error('ffmpeg exited with code ' + ret);",
-    "      let outView;",
-    "      try { outView = core.FS.readFile(String(args.outputName)); }",
-    "      catch (rErr) { self.__err('FS.readFile', rErr); throw rErr; }",
-    "      self.__log('worker: readFile ' + args.outputName + ' -> ' + outView.byteLength + ' bytes');",
-    "      const out = new Uint8Array(outView.byteLength);",
-    "      out.set(outView);",
-    "      try{ core.FS.unlink(String(args.inputName)); }catch(_){}",
-    "      try{ core.FS.unlink(String(args.outputName)); }catch(_){}",
-    "      self.postMessage({id, ok:true, output: out.buffer}, [out.buffer]);",
-    "    }",
-    "  } catch (err) {",
-    "    self.__err('outer', err);",
-    "    self.postMessage({id, ok:false, error: (err && err.message) || String(err)});",
-    "  }",
-    "};",
-  ].join('\n');
-
-  function send(cmd, args, transfer){
-    return new Promise((resolve,reject)=>{
-      const id = ++msgId;
-      pending.set(id, {resolve,reject});
-      worker.postMessage({id,cmd,args}, transfer||[]);
-    });
-  }
-
-  function isReady(){ return !!readyPromise; }
-
-  async function ensureReady(onProgress){
-    if(readyPromise) return readyPromise;
-    readyPromise = (async ()=>{
-      try{
-        const {jsText, wasmBuf, fromCache} = await loadCoreBytes(onProgress);
-        Log.info('FFmpeg engine '+(fromCache?'loaded from local cache':'downloaded')+' — '+Math.round((wasmBuf.byteLength||wasmBuf.length||0)/1024/1024)+'MB, source type='+(wasmBuf.constructor && wasmBuf.constructor.name));
-      const jsBlobURL = URL.createObjectURL(new Blob([jsText], {type:'text/javascript'}));
-      const workerBlobURL = URL.createObjectURL(new Blob([WORKER_SRC], {type:'text/javascript'}));
-      worker = new Worker(workerBlobURL);
-      worker.onmessage = (e)=>{
-        const d = e.data;
-        if(d && d.type === 'log'){ Log.info('FFmpeg ' + d.msg); return; }
-        const {id, ok, output, error} = d;
-        const p = pending.get(id); if(!p) return;
-        pending.delete(id);
-        if(ok) p.resolve(output); else p.reject(new Error(error));
-      };
-      worker.onerror = (e)=>{ Log.error('FFmpeg worker onerror: '+(e && (e.message || e.filename+':'+e.lineno) || 'unknown')); };
-      worker.onmessageerror = (e)=>{ Log.error('FFmpeg worker onmessageerror (likely bad transfer): '+e); };
-      // wasmBuf may come back from IndexedDB as either an ArrayBuffer or a
-      // Uint8Array wrapper depending on the browser's structured-clone
-      // handling. Normalize to a real transferable ArrayBuffer so
-      // postMessage's transfer list works, and log the concrete type first
-      // so the debug log tells us what we're dealing with per device.
-      let wasmForTransfer;
-      if(wasmBuf instanceof ArrayBuffer){ wasmForTransfer = wasmBuf; }
-      else if(wasmBuf && wasmBuf.buffer instanceof ArrayBuffer){
-        // Uint8Array or similar view — extract underlying buffer
-        wasmForTransfer = wasmBuf.byteOffset===0 && wasmBuf.byteLength===wasmBuf.buffer.byteLength
-          ? wasmBuf.buffer
-          : wasmBuf.buffer.slice(wasmBuf.byteOffset, wasmBuf.byteOffset+wasmBuf.byteLength);
-      }else if(wasmBuf && typeof wasmBuf.byteLength === 'number'){
-        // Copy into a fresh ArrayBuffer as a last resort
-        const tmp = new Uint8Array(wasmBuf.byteLength);
-        tmp.set(new Uint8Array(wasmBuf.buffer || wasmBuf));
-        wasmForTransfer = tmp.buffer;
-      }else{
-        throw new Error('cached wasm bytes are the wrong type: '+(wasmBuf && wasmBuf.constructor && wasmBuf.constructor.name));
-      }
-      Log.info('FFmpeg engine: sending wasm to worker ('+Math.round(wasmForTransfer.byteLength/1024)+' KB, source type='+(wasmBuf.constructor && wasmBuf.constructor.name)+')');
-      await send('init', {coreJsBlobURL:jsBlobURL, wasmBinary:wasmForTransfer}, [wasmForTransfer]);
-      state.ffEngineCached = true;
-      if(state.view==='settings') renderSettings();
-      Log.info('FFmpeg WASM engine ready');
-      }catch(setupErr){
-        // Reset so a later attempt (e.g. after re-fetching cached bytes)
-        // actually re-runs setup rather than returning the rejected promise
-        // forever. This is critical when the failure is transient (bad
-        // cached bytes on first try, working bytes on the retry).
-        Log.error('FFmpeg engine setup FAILED: '+(setupErr && setupErr.stack ? setupErr.stack.split('\n').slice(0,4).join(' | ') : (setupErr && setupErr.message) || setupErr));
-        readyPromise = null;
-        // Also blow away the (potentially corrupt) cached engine bytes so
-        // the next attempt re-downloads fresh instead of using the same bad
-        // cache and failing identically.
-        try{ await DB.set('ffCoreJS_v2', undefined); await DB.set('ffCoreWasm_v2', undefined); }catch(_){}
-        throw setupErr;
-      }
-    })();
-    return readyPromise;
-  }
-
-  async function transcodeToMp3(blob, origName, onProgress){
-    await ensureReady(onProgress);
-    const ext = (String(origName).match(/\.([a-z0-9]+)$/i)||[,'in'])[1];
-    const inputName = 'input.'+ext;
-    const outputName = 'output.mp3';
-    const inputBytes = new Uint8Array(await blob.arrayBuffer());
-    const execArgs = ['-i', inputName, '-vn', '-acodec', 'libmp3lame', '-b:a', '160k', outputName];
-    const outBuf = await send('transcode', {inputName, inputBytes, execArgs, outputName}, [inputBytes.buffer]);
-    return new Blob([outBuf], {type:'audio/mpeg'});
-  }
-
-  return { ensureReady, transcodeToMp3, isReady };
-})();
-
-/* Per-file transcode cache — once a song/chapter is converted, the small
-   mp3 result is stored so it never needs to be converted again. */
-async function getCachedTranscode(key){
-  try{
-    const buf = await DB.get('transcode2:'+key);
-    if(!buf) return null;
-    // Accept ArrayBuffer, typed arrays, and Blobs (across realm boundaries
-    // — e.g. tests — instanceof ArrayBuffer can fail even for a genuine
-    // buffer, so also accept anything that quacks like one).
-    if(buf instanceof Blob) return buf;
-    if(buf instanceof ArrayBuffer) return new Blob([buf],{type:'audio/mpeg'});
-    if(buf && typeof buf.byteLength === 'number') return new Blob([buf],{type:'audio/mpeg'});
-    return null;
-  }catch(e){ return null; }
-}
-async function setCachedTranscode(key, blob){
-  try{ const buf = await blob.arrayBuffer(); await DB.set('transcode2:'+key, buf); }catch(e){}
+function isWmaFile(name){
+  return typeof name === 'string' && name.toLowerCase().endsWith('.wma');
 }
 
-/* Queue + per-item guard: the WASM engine can only run one job at a time,
-   and both playSong()'s catch block and the 'error' event can fire for the
-   same failed attempt — this ensures every genuinely distinct request
-   still eventually runs (queued, not dropped), while never converting the
-   same song/chapter twice concurrently. */
-const ffInFlight = new Set();
-let ffQueue = Promise.resolve();
-function queueFF(fn){
-  const run = ()=>fn().catch(e=>console.warn('FFmpeg fallback task failed', e));
-  ffQueue = ffQueue.then(run, run);
-  return ffQueue;
-}
-
-async function tryTranscodeFallbackMusic(id){
-  const key = 'm:'+id;
-  if(ffInFlight.has(key)) return;
-  ffInFlight.add(key);
-  queueFF(async ()=>{
-    try{ await doTranscodeFallbackMusic(id); }
-    finally{ ffInFlight.delete(key); }
-  });
-}
-
-/* Proactive WMA sweep: every .wma song in the library gets converted to
-   mp3 in the background using the same serial queue. Runs after imports
-   and once on boot. Once converted, the mp3 is stored permanently in
-   IndexedDB (same 'transcode:<id>' key the fallback uses), so tapping the
-   song afterward plays the cached mp3 instantly via the fast path in
-   playSong() — no delay, no retry-on-failure round trip. Skips anything
-   already converted, and does nothing at all if there are no WMA files
-   (so users without WMA never see the engine download prompt). */
-async function findUnconvertedWmaIds(){
-  const ids = [];
-  const failCounts = (await DB.get('wmaFailCounts').catch(()=>null)) || {};
-  for(const [id,s] of state.library){
-    if(extOf(s.name)==='wma'){
-      const cached = await DB.get('transcode2:'+id).catch(()=>null);
-      // Skip files that have already failed 3+ times — retrying every
-      // session floods the log and burns battery for no benefit; the user
-      // can force a retry from Settings if they want.
-      if(!cached && (failCounts[id]||0) < 3) ids.push(id);
-    }
-  }
-  return ids;
-}
-async function countAllWma(){
-  let total=0, converted=0;
-  for(const [id,s] of state.library){
-    if(extOf(s.name)==='wma'){
-      total++;
-      const cached = await DB.get('transcode2:'+id).catch(()=>null);
-      if(cached) converted++;
-    }
-  }
-  return {total, converted};
-}
-async function refreshWmaStatus(){
-  state.wmaStatus = await countAllWma();
-  if(state.view==='settings') renderSettings();
-}
-async function sweepWmaLibrary(){
-  const ids = await findUnconvertedWmaIds();
-  if(ids.length===0){ Log.info('WMA sweep: nothing to do (library has no unconverted WMA files)'); return {total:0, converted:0, failed:0}; }
-  Log.info('WMA sweep: '+ids.length+' file(s) queued for conversion');
-  let done = 0, failed = 0;
-  const total = ids.length;
-  const engineReady = FFEngine.isReady();
-  const failCounts = (await DB.get('wmaFailCounts').catch(()=>null)) || {};
-  toastShow(engineReady ? 'Converting WMA files (1 of '+total+')…' : 'Setting up format conversion for WMA (one-time download)…', true);
-  for(const id of ids){
-    const s = state.library.get(id); if(!s){ done++; continue; }
-    const key = 'm:'+id;
-    if(ffInFlight.has(key)){ done++; continue; }
-    ffInFlight.add(key);
-    await queueFF(async ()=>{
-      try{
-        const alreadyCached = await getCachedTranscode(id);
-        if(alreadyCached){ done++; return; }
-        const srcFile = s.file || await fileForSong(s);
-        if(!srcFile){
-          failed++; done++;
-          failCounts[id] = (failCounts[id]||0) + 1;
-          Log.warn('WMA sweep: cannot access file for "'+s.title+'" ('+s.path+') — folder permission may need re-granting');
-          return;
-        }
-        toastProgress(done/total, 'Converting '+(done+1)+' of '+total+' · '+s.title);
-        Log.info('WMA sweep: starting "'+s.title+'" ('+s.path+', '+Math.round((srcFile.size||0)/1024)+' KB)');
-        const blob = await FFEngine.transcodeToMp3(srcFile, s.name, ()=>{});
-        await setCachedTranscode(id, blob);
-        done++;
-        delete failCounts[id]; // clear any previous fail on success
-        Log.info('WMA sweep: converted "'+s.title+'" → mp3 ('+Math.round(blob.size/1024)+' KB)');
-      }catch(e){
-        failed++; done++;
-        failCounts[id] = (failCounts[id]||0) + 1;
-        Log.error('WMA sweep FAILED for "'+s.title+'" (attempt '+failCounts[id]+'): ' + (e&&e.stack ? e.stack.split('\n').slice(0,3).join(' | ') : (e&&e.message||String(e))));
-      }finally{
-        ffInFlight.delete(key);
-      }
-    });
-  }
-  try{ await DB.set('wmaFailCounts', failCounts); }catch(_){}
-  const summary = 'WMA sweep complete: '+(total-failed)+' converted, '+failed+' failed';
-  Log.info(summary);
-  if(failed===0) toastDone('Converted '+pluralize(total,'WMA file')+' to mp3');
-  else toastDone('Converted '+(total-failed)+' of '+total+' WMA files — '+failed+' failed (see debug log)', false, true);
-  return {total, converted: total-failed, failed};
-}
-async function doTranscodeFallbackMusic(id){
-  const s = state.library.get(id); if(!s) return;
-  try{
-    let blob = await getCachedTranscode(id);
-    if(!blob){
-      const srcFile = s.file || await fileForSong(s);
-      if(!srcFile) return;
-      const engineReady = FFEngine.isReady();
-      toastShow(engineReady ? 'Converting “'+s.title+'”…' : 'Setting up format conversion (one-time download)…', true);
-      Log.info('Attempting FFmpeg fallback for "'+s.title+'" ('+s.path+')');
-      blob = await FFEngine.transcodeToMp3(srcFile, s.name, (frac)=>{
-        toastProgress(frac, engineReady ? 'Converting…' : 'Downloading conversion engine — '+Math.round(frac*100)+'%');
-      });
-      await setCachedTranscode(id, blob);
-      Log.info('FFmpeg fallback succeeded for "'+s.title+'"');
-      toastDone('Converted — playing now');
-    }
-    if(state.currentId !== id) return; // user moved on while this was converting
-    if(currentObjectUrl){ try{ URL.revokeObjectURL(currentObjectUrl); }catch(e){} }
-    currentObjectUrl = URL.createObjectURL(blob);
-    audio.src = currentObjectUrl;
-    intentionalPause = false;
-    await audio.play();
-    state.playing = true;
-    updateNowPlaying(); updatePlayButtons(); markPlayingRows(); updateMediaSession(s);
-  }catch(e){
-    Log.warn('FFmpeg fallback failed for "'+s.title+'": '+(e&&e.message?e.message:e));
-    toastDone('This format isn’t supported here', false, true);
-    state.playing=false; updatePlayButtons();
-  }
-}
-
-async function tryTranscodeFallbackBook(){
-  const bookId = state.currentBookId, partIdx = state.currentPart;
-  if(!bookId) return;
-  const key = 'b:'+bookId+':'+partIdx;
-  if(ffInFlight.has(key)) return;
-  ffInFlight.add(key);
-  queueFF(async ()=>{
-    try{ await doTranscodeFallbackBook(bookId, partIdx); }
-    finally{ ffInFlight.delete(key); }
-  });
-}
-async function doTranscodeFallbackBook(bookId, partIdx){
-  const b = state.books.get(bookId); if(!b) return;
-  const part = b.parts[partIdx]; if(!part) return;
-  const cacheKey = bookId+':'+partIdx;
-  try{
-    let blob = await getCachedTranscode(cacheKey);
-    if(!blob){
-      const srcFile = part.file || await fileForPart(part);
-      if(!srcFile) return;
-      const engineReady = FFEngine.isReady();
-      toastShow(engineReady ? 'Converting chapter…' : 'Setting up format conversion (one-time download)…', true);
-      Log.info('Attempting FFmpeg fallback for audiobook "'+b.title+'" chapter '+(partIdx+1));
-      blob = await FFEngine.transcodeToMp3(srcFile, part.name, (frac)=>{
-        toastProgress(frac, engineReady ? 'Converting…' : 'Downloading conversion engine — '+Math.round(frac*100)+'%');
-      });
-      await setCachedTranscode(cacheKey, blob);
-      Log.info('FFmpeg fallback succeeded for audiobook "'+b.title+'"');
-      toastDone('Converted — playing now');
-    }
-    if(state.currentBookId!==bookId || state.currentPart!==partIdx) return;
-    if(currentObjectUrl){ try{ URL.revokeObjectURL(currentObjectUrl); }catch(e){} }
-    currentObjectUrl = URL.createObjectURL(blob);
-    audio.src = currentObjectUrl; // pendingBookSeek is still set from the original failed attempt
-    intentionalPause = false;
-    await audio.play();
-    state.playing = true;
-    updatePlayButtons(); updateBookMediaSession(); updateBookMini();
-  }catch(e){
-    Log.warn('FFmpeg fallback failed for audiobook "'+b.title+'": '+(e&&e.message?e.message:e));
-    toastDone('This audiobook file format isn’t supported here', false, true);
-    state.playing=false; updatePlayButtons();
-  }
-}
 
 /* ============================================================================
    Banner (removed): the reconnect banner used to appear when folder
@@ -4087,9 +3628,6 @@ function setCapabilityNote(){
 async function boot(){
   await Log.load();
   Log.info('Reel v'+APP_VERSION+' booting — '+navigator.userAgent);
-  // non-blocking: just checks IndexedDB for a previously-cached engine so
-  // Settings can show accurate status; does not fetch anything itself
-  DB.get('ffCoreWasm_v2').then(v=>{ state.ffEngineCached = !!v; if(state.view==='settings') renderSettings(); }).catch(()=>{});
   wire();
   setCapabilityNote();
   // load prefs
@@ -4182,13 +3720,6 @@ async function boot(){
   }
   refreshCurrentView();
   Log.info('Boot complete');
-  // After the app is fully up and interactive, sweep any WMA files in the
-  // library that haven't been converted yet. Delayed slightly so the UI is
-  // responsive first before the background work starts.
-  setTimeout(()=>{
-    refreshWmaStatus();
-    sweepWmaLibrary().then(()=>refreshWmaStatus()).catch(e=>Log.warn('WMA sweep on boot failed: '+(e&&e.message?e.message:e)));
-  }, 1500);
 }
 
 /* Chrome's File System Access API deliberately does not remember folder
@@ -4457,19 +3988,15 @@ function renderSettings(){
     + '</div>';
 
   // Advanced
-  const wma = state.wmaStatus || {total:0, converted:0};
-  const wmaText = wma.total===0
-    ? 'No WMA files in your library'
-    : (wma.converted===wma.total
-        ? 'All '+wma.total+' WMA files converted to mp3'
-        : wma.converted+' of '+wma.total+' converted · tap to convert the rest');
+  let wmaCount = 0;
+  for(const s of state.library.values()){ if(extOf(s.name)==='wma') wmaCount++; }
   html += '<div class="set-group"><h3>Advanced</h3><div class="set-card">'
     + '<button class="set-row" data-set="log"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></div><div class="sm"><div class="st">Debug log</div><div class="ss">'+Log.count()+' entries · actions, imports, playback &amp; errors</div></div>'+chev+'</button>'
-    + '<button class="set-row" data-set="ffengine"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></div><div class="sm"><div class="st">Format conversion engine</div><div class="ss">'+(state.ffEngineCached ? 'Ready — WMA and other unsupported formats convert automatically' : 'Not downloaded yet — tap to fetch now (~32MB, one time, needs internet)') +'</div></div>'+chev+'</button>'
-    + '<button class="set-row" data-set="wma-convert"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></div><div class="sm"><div class="st">Convert all WMA to mp3</div><div class="ss">'+esc(wmaText)+'</div></div>'+chev+'</button>'
     + '</div>'
-    + '<div class="set-note">The log stays on your device and is never sent anywhere. Useful if something isn\'t working right and you want to see exactly what happened — including any WMA conversion errors.</div>'
-    + '<div class="set-note" style="margin-top:10px;">WMA files can\'t be played by any Chrome-based browser directly (Chrome has never shipped a WMA codec), so Reel converts them to mp3 on your device using a real audio decoder. Conversions run automatically in the background after import; you can also trigger a sweep manually with the row above. Once a file has been converted the result is stored permanently, so playback afterward is instant.</div>'
+    + '<div class="set-note">The log stays on your device and is never sent anywhere. Useful if something isn\'t working right and you want to see exactly what happened.</div>'
+    + (wmaCount>0
+        ? '<div class="set-note" style="margin-top:10px;color:var(--amber);">'+pluralize(wmaCount,'WMA file')+' in your library can\'t be played — Chrome has never shipped a WMA decoder, on any platform, so this can\'t be fixed from inside the browser. Convert them to mp3 on a computer (a free tool like VLC does this in a few clicks) and re-import.</div>'
+        : '')
     + '</div>';
 
   $('settingsBody').innerHTML = html;
@@ -4495,29 +4022,6 @@ function onSettingsClick(e){
       const n = removeMissingSongs();
       toastDone(n>0 ? 'Removed '+pluralize(n,'missing song') : 'Nothing to clean up', n>0);
       renderSettings();
-    }
-    else if(a==='ffengine'){
-      if(state.ffEngineCached || FFEngine.isReady()){
-        toastDone('Already downloaded and ready', false);
-      }else{
-        toastShow('Downloading conversion engine…', true);
-        FFEngine.ensureReady((frac)=>toastProgress(frac, Math.round(frac*100)+'%'))
-          .then(()=>{ toastDone('Ready — conversion engine downloaded'); renderSettings(); })
-          .catch((e)=>{ Log.warn('Manual engine download failed: '+(e&&e.message?e.message:e)); toastDone('Download failed — check your connection', false, true); });
-      }
-    }
-    else if(a==='wma-convert'){
-      const st = state.wmaStatus||{total:0, converted:0};
-      if(st.total===0){ toastDone('No WMA files in your library', false); }
-      else if(st.converted===st.total){ toastDone('All WMA files are already converted', false); }
-      else{
-        // A manual retry means "try everything again", including files that
-        // hit the fail-count limit — so clear it before running.
-        DB.set('wmaFailCounts', {}).catch(()=>{});
-        sweepWmaLibrary()
-          .then(()=>refreshWmaStatus())
-          .catch((e)=>{ Log.error('Manual WMA sweep failed: '+(e&&e.stack?e.stack.split('\n').slice(0,3).join(' | '):e)); toastDone('Conversion had an error — see debug log', false, true); });
-      }
     }
     return;
   }
@@ -4948,6 +4452,11 @@ async function playBookPart(partIndex, seekTime, autoplay){
   state.currentPart = partIndex;
   b.position = {part:partIndex, time:seekTime||0};
   const part = b.parts[partIndex];
+  if(isWmaFile(part.name || part.path)){
+    Log.info('Skipping WMA chapter (not supported): "'+b.title+'" chapter '+(partIndex+1)+' ('+part.path+')');
+    toastDone('WMA can\u2019t be played in the browser \u2014 convert to mp3 on a computer first', false, true);
+    return;
+  }
   const file = await fileForPart(part);
   if(!file){
     Log.warn('Cannot open audiobook file for "'+b.title+'" chapter '+(partIndex+1)+' ('+part.path+')');

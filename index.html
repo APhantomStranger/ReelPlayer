@@ -1247,8 +1247,11 @@ const state = {
   bulkAddSearch: '',
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.0.0';
+const APP_VERSION = '3.0.1';
 const CHANGELOG = [
+  { v:'3.0.1', date:'Aug 2, 2026', items:[
+    'Fixed shuffle always starting on the first song in the list — playlists, albums, artists, and resuming playback with shuffle already on. The shuffle order was being deliberately "anchored" to start on whichever song index was passed in, a behavior meant for a different case (tapping a specific song while shuffle happens to be on); the Shuffle buttons were unintentionally inheriting it by always passing the first song\'s index. Shuffle now genuinely randomizes which song plays first, every time.',
+  ]},
   { v:'3.0.0', date:'Aug 2, 2026', items:[
     'Removed in-browser WMA-to-mp3 conversion entirely. Despite several rounds of fixes, it kept failing on real devices with an error deep inside the FFmpeg WebAssembly engine that couldn\'t be reliably resolved from within the browser. Rather than keep shipping a feature that didn\'t work, it\'s been taken out.',
     'Tapping a WMA file now shows a clear message telling you to convert it to mp3 on a computer first (a free tool like VLC does this in a few clicks), instead of silently failing or retrying.',
@@ -2514,7 +2517,7 @@ function playQueueAt(index){
 function playContext(ids, startIndex){
   setQueue(ids, startIndex);
   if(state.shuffle){ state.shufflePos=0; playQueueAt(state.shuffleOrder[0]); }
-  else playQueueAt(startIndex);
+  else playQueueAt(startIndex>=0 ? startIndex : 0);
 }
 function nextTrack(auto){
   if(auto && sleepEndOfTrack){ requestPause(); clearSleep(); if(state.view==='settings') renderSettings(); return; }
@@ -2558,7 +2561,7 @@ function togglePlay(){
   if(!state.currentId){
     // start from current filtered list
     const ids = state.view==='detail' && state.detail ? state.detail.songIds : filteredSongIds();
-    if(ids.length){ playContext(ids,0); }
+    if(ids.length){ playContext(ids, state.shuffle ? -1 : 0); }
     return;
   }
   if(audio.paused){ audio.play(); state.playing=true; }
@@ -3394,7 +3397,7 @@ function onListClick(e){
   const playAll = t.closest('[data-act="playall"]');
   if(playAll){ if(state.detail&&state.detail.songIds.length){ state.shuffle=false; $('btnShuffle').classList.remove('active'); playContext(state.detail.songIds,0); openPlayer(); } return; }
   const shufAll = t.closest('[data-act="shuffleall"]');
-  if(shufAll){ if(state.detail&&state.detail.songIds.length){ state.shuffle=true; $('btnShuffle').classList.add('active'); playContext(state.detail.songIds,0); openPlayer(); } return; }
+  if(shufAll){ if(state.detail&&state.detail.songIds.length){ state.shuffle=true; $('btnShuffle').classList.add('active'); playContext(state.detail.songIds,-1); openPlayer(); } return; }
   const plEdit = t.closest('[data-act="pledit"]');
   if(plEdit){ if(state.detail&&state.detail.plId) openPlaylistMenu(state.detail.plId); return; }
   const addSongsBtn = t.closest('[data-act="addsongs"]');
@@ -3471,7 +3474,7 @@ function openPlaylistMenu(plId){
     const pl = state.playlists.find(x=>x.id===key); if(!pl) return;
     const ids = pl.songIds.filter(id=>state.library.has(id));
     if(act==='pl-play'){ if(ids.length){ state.shuffle=false;$('btnShuffle').classList.remove('active'); playContext(ids,0); openPlayer(); } }
-    else if(act==='pl-shuffle'){ if(ids.length){ state.shuffle=true;$('btnShuffle').classList.add('active'); playContext(ids,0); openPlayer(); } }
+    else if(act==='pl-shuffle'){ if(ids.length){ state.shuffle=true;$('btnShuffle').classList.add('active'); playContext(ids,-1); openPlayer(); } }
     else if(act==='pl-rename'){ editingPlaylistId=key; $('newSheetTitle').textContent='Rename playlist'; $('newPlaylistName').value=pl.name; openSheet($('sheetNew')); setTimeout(()=>$('newPlaylistName').select(),250); }
     else if(act==='pl-export'){ exportPlaylist(key); }
     else if(act==='pl-delete'){ deletePlaylist(key); if(state.view==='detail') switchView('playlists'); else renderPlaylists(); }

@@ -1247,8 +1247,14 @@ const state = {
   bulkAddSearch: '',
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.0.1';
+const APP_VERSION = '3.1.0';
 const CHANGELOG = [
+  { v:'3.1.0', date:'Aug 2, 2026', items:[
+    'Rescanning now keeps the library truly in sync, not just additive: any song no longer found in the music folder is removed from the main library, and from every playlist, favourites, and recently-played it appeared in. This applies to a manual rescan, the automatic background rescan, and reopening the app.',
+    'A rescan only removes anything if it completed cleanly — if the scan hit an error or found zero files (usually a sign of a permission problem, not an actually-empty folder), nothing is removed that time, to avoid an unreliable scan wiping out songs that are still there.',
+    'A song that\'s actively playing is never removed out from under you mid-song, even if a manual rescan runs while it\'s playing.',
+    'The existing "Remove missing songs" button in Settings now also cleans up playlists, favourites, and recently-played — previously it only touched the main library and could leave stale entries in playlists.',
+  ]},
   { v:'3.0.1', date:'Aug 2, 2026', items:[
     'Fixed shuffle always starting on the first song in the list — playlists, albums, artists, and resuming playback with shuffle already on. The shuffle order was being deliberately "anchored" to start on whichever song index was passed in, a behavior meant for a different case (tapping a specific song while shuffle happens to be on); the Shuffle buttons were unintentionally inheriting it by always passing the first song\'s index. Shuffle now genuinely randomizes which song plays first, every time.',
   ]},
@@ -1762,21 +1768,77 @@ async function loadLibrary(){
     return arr.length;
   }catch(e){ console.warn('loadLibrary failed', e); return 0; }
 }
+/* Removes the given song ids from EVERYWHERE they can appear: the library
+   itself, every playlist's song list, favourites, and recently-played.
+   Used both by the manual "Remove missing songs" Settings action and by
+   the automatic post-scan sync below — a song disappearing should mean
+   it disappears consistently everywhere, not just from the main list. */
+function purgeSongsEverywhere(ids){
+  if(!ids || ids.length===0) return 0;
+  const idSet = new Set(ids);
+  let removed = 0;
+  for(const id of idSet){
+    if(state.library.delete(id)) removed++;
+  }
+  if(removed===0) return 0;
+
+  let playlistsChanged = false;
+  for(const pl of state.playlists){
+    const before = pl.songIds.length;
+    pl.songIds = pl.songIds.filter(id=>!idSet.has(id));
+    if(pl.songIds.length!==before) playlistsChanged = true;
+  }
+  if(playlistsChanged) persistPlaylists();
+
+  const favBefore = state.favorites.length;
+  state.favorites = state.favorites.filter(id=>!idSet.has(id));
+  if(state.favorites.length!==favBefore) state.favSet = new Set(state.favorites);
+  state.recent = state.recent.filter(id=>!idSet.has(id));
+  persistPrefs();
+
+  rebuildDerived();
+  refreshCurrentView();
+  saveLibrary();
+  return removed;
+}
 function removeMissingSongs(){
-  // Drop songs whose file reference is gone AND whose handle can't be reached.
-  // Called from Settings on user request. Non-destructive re: files on disk.
-  let removed=0;
-  const keep = new Map();
+  // Manual cleanup from Settings: drop songs whose file reference is gone
+  // AND whose handle can't be reached either.
+  const toRemove = [];
   for(const [id,s] of state.library){
-    if(s.file || s.handle) keep.set(id, s);
-    else removed++;
+    if(!s.file && !s.handle) toRemove.push(id);
   }
-  if(removed>0){
-    state.library = keep;
-    rebuildDerived();
-    refreshCurrentView();
-    saveLibrary();
+  return purgeSongsEverywhere(toRemove);
+}
+/* Automatic cleanup after a folder scan: anything currently in the library
+   that the scan did NOT find gets removed, everywhere. Guarded so a failed
+   or partial scan (permission revoked mid-scan, a subfolder that errored)
+   can never be mistaken for "the user deleted everything" — a scan only
+   gets to remove songs if it completed with zero errors and found at
+   least one file, otherwise nothing is removed and the reason is logged. */
+function syncLibraryAfterScan(acc, guard){
+  if(!acc || acc.length===0){
+    if(state.library.size>0) Log.warn('Scan sync skipped: scan found 0 files — likely a permission or access problem, not an empty folder. Nothing was removed.');
+    return 0;
   }
+  if(guard && guard.errors){
+    Log.warn('Scan sync skipped: scan had '+guard.errors+' error(s), so results may be incomplete. Nothing was removed this time.');
+    return 0;
+  }
+  const present = new Set();
+  for(const e of acc){ present.add(songId(e.file, e.path)); }
+  const toRemove = [];
+  for(const id of state.library.keys()){
+    if(present.has(id)) continue;
+    // Never remove whatever's actively playing right now, even if the scan
+    // didn't find it — it'll be re-evaluated on the next scan once playback
+    // has moved on. Avoids yanking audio out from under the user mid-song.
+    if(id===state.currentId && state.playing) continue;
+    toRemove.push(id);
+  }
+  if(toRemove.length===0) return 0;
+  const removed = purgeSongsEverywhere(toRemove);
+  if(removed>0) Log.info('Scan sync: removed '+removed+' song(s) no longer found in the folder');
   return removed;
 }
 
@@ -1848,7 +1910,14 @@ async function scanAndImportFolder(showToast){
     +(guard.errors? ', '+guard.errors+' errors (see console)':'');
   Log.info(diag);
   if(showToast) toastProgress(1, diag);
-  await importFiles(acc);
+  const {added} = await importFiles(acc);
+  const removed = syncLibraryAfterScan(acc, guard);
+  if(showToast && removed>0){
+    const parts = [];
+    if(added>0) parts.push(pluralize(added,'song')+' added');
+    parts.push(pluralize(removed,'song')+' removed');
+    toastDone(parts.join(', '));
+  }
   clearBanner();
 }
 
@@ -3116,9 +3185,11 @@ function startAutoRescan(){
     try{
       const perm = await state.dirHandle.queryPermission({mode:'read'});
       if(perm!=='granted') return;
-      const acc=[]; await scanDir(state.dirHandle,'',acc,{count:0},0);
+      const guard = {count:0, foldersScanned:0, errors:0, skippedDeep:0};
+      const acc=[]; await scanDir(state.dirHandle,'',acc,guard,0);
       // only import if there might be new ones
       await importFiles(acc);
+      syncLibraryAfterScan(acc, guard);
     }catch(e){/* ignore */}
   }, 45000);
 }

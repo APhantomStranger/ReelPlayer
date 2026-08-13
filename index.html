@@ -1247,8 +1247,16 @@ const state = {
   bulkAddSearch: '',
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.1.1';
+const APP_VERSION = '3.1.3';
 const CHANGELOG = [
+  { v:'3.1.3', date:'Aug 2, 2026', items:[
+    'When a song fails to play with a "format not supported" error, the debug log now also reports what the file\u2019s actual content looks like (by reading its real header bytes), not just its extension \u2014 so if a file is named .mp3 but doesn\u2019t actually contain MP3 data (a bad conversion, a straight rename, a corrupted transfer), that shows up immediately as e.g. "this .mp3 is actually a WMA file" instead of a dead-end error with no further clue.',
+  ]},
+  { v:'3.1.2', date:'Aug 2, 2026', items:[
+    'Fixed rescan not removing songs when the music folder is now completely empty. The library-sync feature added in 3.1.0 had a safety guard that was too cautious: it treated ANY scan that found zero files as a possible permission/access failure and skipped removal entirely — which meant if you genuinely deleted every song from your phone, the app kept showing all of them forever, since a truly-empty scan result never got to update the library. Every scan already confirms folder permission is granted before it starts, so a clean scan (no errors) that finds nothing is trustworthy: the folder really is empty, and the library (and every playlist) now correctly empties out to match.',
+    'The scan-complete toast no longer stays stuck on screen in the specific case where nothing was added or removed and the folder is empty.',
+    'If a paused (not actively playing) song gets removed by a sync, the mini-player no longer keeps showing it as a stale, unplayable entry.',
+  ]},
   { v:'3.1.1', date:'Aug 2, 2026', items:[
     'Fixed a real bug where returning to the app after backgrounding it could stop playback immediately, with no recovery. Root cause: Android can briefly reclaim audio focus at the exact moment the app returns to foreground, causing an unintended pause. Reel already had a retry safety net built specifically for this — but that safety net, and the immediate auto-resume attempt that runs right when the pause happens, were both checking the same flag. If the very first resume attempt happened to fail (which can happen right at that transition), it flipped that flag in a way that silenced every one of the follow-up retries meant to catch exactly this. The two are now tracked separately — "what\'s happening right now" vs. "what the user actually wants" — so one failed attempt no longer cancels the recovery mechanism built to handle it.',
   ]},
@@ -1799,6 +1807,16 @@ function purgeSongsEverywhere(ids){
   state.recent = state.recent.filter(id=>!idSet.has(id));
   persistPrefs();
 
+  // The currently-loaded song can only be in idSet if it wasn't actively
+  // playing (syncLibraryAfterScan explicitly protects a playing song from
+  // removal) — so if it's gone, there's nothing to stop, just a stale
+  // mini-player display to clear.
+  if(state.currentId && idSet.has(state.currentId)){
+    state.currentId = null;
+    updateNowPlaying();
+    updatePlayButtons();
+  }
+
   rebuildDerived();
   refreshCurrentView();
   saveLibrary();
@@ -1814,16 +1832,16 @@ function removeMissingSongs(){
   return purgeSongsEverywhere(toRemove);
 }
 /* Automatic cleanup after a folder scan: anything currently in the library
-   that the scan did NOT find gets removed, everywhere. Guarded so a failed
-   or partial scan (permission revoked mid-scan, a subfolder that errored)
-   can never be mistaken for "the user deleted everything" — a scan only
-   gets to remove songs if it completed with zero errors and found at
-   least one file, otherwise nothing is removed and the reason is logged. */
+   that the scan did NOT find gets removed, everywhere — including down to
+   zero if the folder is now genuinely empty. Guarded only against a scan
+   that actually failed partway (errors>0), since that means the results
+   may be incomplete and can't be trusted to represent "this file is gone."
+   A scan that completes with zero errors and finds zero files is NOT
+   treated as suspicious — every caller of scanAndImportFolder already
+   verifies folder permission is granted before scanning even starts, so a
+   clean empty result is trustworthy: the folder really is empty. */
 function syncLibraryAfterScan(acc, guard){
-  if(!acc || acc.length===0){
-    if(state.library.size>0) Log.warn('Scan sync skipped: scan found 0 files — likely a permission or access problem, not an empty folder. Nothing was removed.');
-    return 0;
-  }
+  if(!acc) return 0;
   if(guard && guard.errors){
     Log.warn('Scan sync skipped: scan had '+guard.errors+' error(s), so results may be incomplete. Nothing was removed this time.');
     return 0;
@@ -1841,7 +1859,7 @@ function syncLibraryAfterScan(acc, guard){
   }
   if(toRemove.length===0) return 0;
   const removed = purgeSongsEverywhere(toRemove);
-  if(removed>0) Log.info('Scan sync: removed '+removed+' song(s) no longer found in the folder');
+  if(removed>0) Log.info('Scan sync: removed '+removed+' song(s) no longer found in the folder'+(acc.length===0?' (folder is now empty)':''));
   return removed;
 }
 
@@ -1915,11 +1933,20 @@ async function scanAndImportFolder(showToast){
   if(showToast) toastProgress(1, diag);
   const {added} = await importFiles(acc);
   const removed = syncLibraryAfterScan(acc, guard);
-  if(showToast && removed>0){
-    const parts = [];
-    if(added>0) parts.push(pluralize(added,'song')+' added');
-    parts.push(pluralize(removed,'song')+' removed');
-    toastDone(parts.join(', '));
+  if(showToast){
+    if(removed>0){
+      const parts = [];
+      if(added>0) parts.push(pluralize(added,'song')+' added');
+      parts.push(pluralize(removed,'song')+' removed');
+      toastDone(parts.join(', '));
+    }else if(acc.length===0){
+      // importFiles() returns early with no toast of its own when there's
+      // nothing to import, and nothing was removed either here — without
+      // this, the "Scanning folder…" toast could be left stuck on screen.
+      toastDone(state.library.size===0 ? 'No songs found in this folder' : 'Library up to date');
+    }
+    // otherwise importFiles() already showed its own "N added" / "up to
+    // date" toast for this scan.
   }
   clearBanner();
 }
@@ -2523,6 +2550,32 @@ async function walkPath(rootHandle, relPath){
   catch(e){ return null; }
 }
 
+/* When a file fails to play with a "format not supported" style error,
+   the extension alone doesn't tell us WHY — a file can be named .mp3 and
+   still not actually contain MP3 data (a bad conversion, a straight
+   rename, a corrupted transfer). This reads just the first few bytes and
+   checks them against the real signatures each format actually starts
+   with, so the debug log can say plainly "this .mp3 is actually a WMA"
+   instead of just "not supported" with no further clue. */
+async function sniffAudioFormat(file){
+  try{
+    const buf = await file.slice(0, 16).arrayBuffer();
+    const h = new Uint8Array(buf);
+    const hex = Array.from(h).map(b=>b.toString(16).padStart(2,'0')).join(' ');
+    let detected;
+    if(h[0]===0x49 && h[1]===0x44 && h[2]===0x33) detected = 'MP3 (ID3 tag present — genuinely an MP3)';
+    else if(h[0]===0xFF && (h[1]&0xE0)===0xE0) detected = 'MP3 (raw frame sync — genuinely an MP3)';
+    else if(h[0]===0x30 && h[1]===0x26 && h[2]===0xB2 && h[3]===0x75) detected = 'WMA/ASF — this is actually a Windows Media file with an .mp3 name, not a real MP3';
+    else if(h[0]===0x66 && h[1]===0x4C && h[2]===0x61 && h[3]===0x43) detected = 'FLAC, not the format its extension claims';
+    else if(h[0]===0x4F && h[1]===0x67 && h[2]===0x67 && h[3]===0x53) detected = 'OGG, not the format its extension claims';
+    else if(h[0]===0x52 && h[1]===0x49 && h[2]===0x46 && h[3]===0x46) detected = 'WAV/RIFF, not the format its extension claims';
+    else if(h[4]===0x66 && h[5]===0x74 && h[6]===0x79 && h[7]===0x70) detected = 'MP4/M4A container, not the format its extension claims';
+    else if(h.every(b=>b===0)) detected = 'all zero bytes — the file looks empty or never finished writing';
+    else detected = 'unrecognized — doesn\u2019t match any common audio format\u2019s actual signature';
+    return {detected, hex, size: file.size};
+  }catch(e){ return null; }
+}
+
 async function playSong(id){
   const s = state.library.get(id);
   if(!s) return;
@@ -2560,6 +2613,11 @@ async function playSong(id){
     state.playing = false;
     const name = e && e.name;
     Log.warn('Native playback failed for "'+s.title+'" ('+s.path+'): '+(name||e));
+    if(name==='NotSupportedError'){
+      sniffAudioFormat(file).then(sniff=>{
+        if(sniff) Log.warn('File "'+s.name+'" is named .'+extOf(s.name)+' but its actual content looks like: '+sniff.detected+' \u2014 '+sniff.size+' bytes, first bytes: '+sniff.hex);
+      });
+    }
     toastDone('This format isn’t supported here', false, true);
   }
   updateNowPlaying();
@@ -2727,6 +2785,13 @@ audio.addEventListener('error', ()=>{
   }
   const s = state.library.get(state.currentId);
   Log.warn('Playback error'+(s?' — "'+s.title+'"':'')+': '+reason);
+  if(s && (code===3 || code===4)){
+    (s.file ? Promise.resolve(s.file) : fileForSong(s)).then(f=>{
+      if(f) return sniffAudioFormat(f);
+    }).then(sniff=>{
+      if(sniff) Log.warn('File "'+s.name+'" is named .'+extOf(s.name)+' but its actual content looks like: '+sniff.detected+' \u2014 '+sniff.size+' bytes, first bytes: '+sniff.hex);
+    }).catch(()=>{});
+  }
   if(state.currentId){ state.playing=false; updatePlayButtons(); toastDone('This format isn’t supported here', false, true); }
 });
 

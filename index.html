@@ -856,6 +856,11 @@
   .bulkadd-title{font-size:24px;font-weight:700;text-align:center;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .bulkadd-count{font-size:20px;color:var(--amber);font-weight:700;font-family:var(--mono);flex:0 0 auto;min-width:64px;text-align:right;}
   .bulk-check{width:40px;height:40px;border-radius:50%;border:2.5px solid var(--line-2);display:grid;place-items:center;flex:0 0 auto;color:transparent;transition:background .12s,border-color .12s;}
+  .bulk-play{width:52px;height:52px;border-radius:50%;flex:0 0 auto;display:grid;place-items:center;color:var(--text);background:var(--surface-2);border:1px solid var(--line-2);}
+  .bulk-play:active{background:var(--surface-3);transform:scale(.94);}
+  .bulk-play svg{width:24px;height:24px;margin-left:2px;}
+  .bulk-play.active{background:var(--amber);border-color:var(--amber);color:#05140b;}
+  .bulk-play.active svg{margin-left:0;}
   .bulk-check svg{width:22px;height:22px;}
   .bulkrow.checked .bulk-check{background:var(--amber);border-color:var(--amber);color:#05140b;}
   /* the whole row, not just the checkmark, signals "already in this
@@ -1116,7 +1121,11 @@
     <input type="text" id="bulkSearchInput" placeholder="Search your library" autocomplete="off">
     <button class="clear" id="bulkSearchClear" aria-label="Clear">×</button>
   </div>
-  <div class="list-wrap"><div class="vlist scroll" id="bulkAddList"><div class="vlist-inner"><div class="vlist-content"></div></div></div></div>
+  <div class="list-wrap">
+    <div class="vlist scroll" id="bulkAddList"><div class="vlist-inner"><div class="vlist-content"></div></div></div>
+    <div class="az" id="bulkAddAzRail"></div>
+    <div class="az-bubble" id="bulkAddAzBubble"></div>
+  </div>
 </div>
 
 <!-- Sheets -->
@@ -1265,8 +1274,12 @@ const state = {
   bulkAddSearch: '',
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.3.1';
+const APP_VERSION = '3.4.0';
 const CHANGELOG = [
+  { v:'3.4.0', date:'Aug 2, 2026', items:[
+    'The "Add songs" picker now has the same A\u2013Z fast-scroll rail as the main Songs list \u2014 drag down the letters on the right edge to jump straight to that part of your library instead of scrolling through everything.',
+    'Every song in the "Add songs" picker now has its own play button, separate from the checkmark that adds/removes it from the playlist \u2014 tap it to preview a song right from the picker without leaving it, so you can keep browsing and adding songs while it plays. Tapping it again pauses; the row highlights and shows a small equalizer animation while that song is playing, matching how the rest of the app shows what\u2019s currently playing.',
+  ]},
   { v:'3.3.1', date:'Aug 2, 2026', items:[
     'Fixed intermittent pauses that needed a manual tap to resume, even while actively using the app (not just returning from the background). A pause caused by something outside Reel \u2014 a Bluetooth headset briefly reconnecting or changing audio route is the most common real-world cause \u2014 only ever got ONE automatic resume attempt. If that single attempt failed (which a mid-reconnect Bluetooth route change easily can), nothing else tried again unless you happened to switch away from the app and back. Now every unintended pause gets several follow-up attempts over the next few seconds, regardless of whether the app\u2019s visibility ever changed.',
     'MediaSession play/pause actions (how lock-screen controls and headset buttons reach the app) are now logged, so a future report like this can distinguish "something explicitly told the app to pause" from "playback just stopped on its own."',
@@ -2514,6 +2527,40 @@ function jumpToLetterDetail(letter){
   clearTimeout(jumpToLetterDetail._t); jumpToLetterDetail._t = setTimeout(()=>b.classList.remove('show'), 550);
 }
 
+/* Same rail again, for the "Add songs" picker. Always alphabetical by
+   title (same as the picker's own ordering) and operates on whatever the
+   CURRENT filtered/searched list is — if a search is active, the rail
+   reflects just the matches, same as the main list hides its rail during
+   a search rather than jumping through results that aren't shown. */
+function updateBulkAddAZ(){
+  const rail = $('bulkAddAzRail');
+  if(!rail) return;
+  const ids = bulkAddFilteredIds();
+  if(state.bulkAddSearch || ids.length<40){
+    rail.innerHTML=''; return;
+  }
+  const present = new Set();
+  for(const id of ids){
+    const s = state.library.get(id); if(s) present.add(letterOf(s,'title'));
+  }
+  const letters = AZ_LETTERS.filter(l=>present.has(l));
+  rail.innerHTML = letters.map(l=>'<button data-az="'+l+'">'+l+'</button>').join('');
+}
+function firstIndexForLetterBulkAdd(letter){
+  const ids = bulkAddFilteredIds();
+  for(let i=0;i<ids.length;i++){
+    const s = state.library.get(ids[i]);
+    if(s && letterOf(s,'title')===letter) return i;
+  }
+  return -1;
+}
+function jumpToLetterBulkAdd(letter){
+  const idx = firstIndexForLetterBulkAdd(letter);
+  if(idx>=0 && bulkVList){ bulkVList.scrollToIndex(idx); }
+  const b = $('bulkAddAzBubble'); b.textContent = letter; b.classList.add('show');
+  clearTimeout(jumpToLetterBulkAdd._t); jumpToLetterBulkAdd._t = setTimeout(()=>b.classList.remove('show'), 550);
+}
+
 /* ============================================================================
    Playback engine
 ============================================================================ */
@@ -2864,18 +2911,19 @@ function scheduleResumeRetries(reason){
   attempt(4, 5000);
 }
 
-audio.addEventListener('play', ()=>{ state.playing=true; userWantsPlaying=true; updatePlayButtons(); $('player').classList.remove('paused'); });
+audio.addEventListener('play', ()=>{ state.playing=true; userWantsPlaying=true; updatePlayButtons(); $('player').classList.remove('paused'); markPlayingRows(); });
 audio.addEventListener('pause', ()=>{
   if(intentionalPause){
     intentionalPause = false;
     state.playing = false;
     updatePlayButtons();
     $('player').classList.add('paused');
+    markPlayingRows();
   }else{
     // Nothing in Reel asked for this pause — resume immediately.
     Log.warn('Unintended pause (no visibility change) — attempting to resume');
     audio.play().catch(()=>{
-      state.playing=false; updatePlayButtons(); $('player').classList.add('paused');
+      state.playing=false; updatePlayButtons(); $('player').classList.add('paused'); markPlayingRows();
       scheduleResumeRetries('after unintended pause');
     });
   }
@@ -2947,6 +2995,7 @@ function updatePlayButtons(){
 function markPlayingRows(){
   if(songsVList) songsVList.refresh();
   if(detailVList && state.view==='detail') detailVList.refresh();
+  if(bulkVList && $('bulkAdd').classList.contains('open')) bulkVList.refresh();
 }
 
 function updateNowPlaying(){
@@ -3223,12 +3272,18 @@ function bulkRowHTML(id){
   if(!s) return '';
   const pl = state.playlists.find(p=>p.id===state.bulkAddPlId);
   const has = pl ? pl.songIds.includes(id) : false;
-  return '<button class="row bulkrow'+(has?' checked':'')+'" data-id="'+esc(id)+'" data-act="bulktoggle">'
-    + '<div class="row-art">'+NOTE_SVG+'</div>'
+  const isCurrent = id===state.currentId;
+  const playingNow = isCurrent && state.playing;
+  const playIcon = playingNow
+    ? '<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>'
+    : '<path d="M8 5v14l11-7z"/>';
+  return '<div class="row bulkrow'+(has?' checked':'')+(isCurrent?' playing':'')+'" data-id="'+esc(id)+'" data-act="bulktoggle">'
+    + '<div class="row-art">'+NOTE_SVG+(isCurrent?EQ_HTML:'')+'</div>'
     + '<div class="row-main"><div class="row-title">'+esc(s.title)+'</div>'
     + '<div class="row-sub">'+esc(s.artist)+' · '+esc(s.album)+'</div></div>'
+    + '<button class="bulk-play'+(playingNow?' active':'')+'" data-act="bulkplay" data-id="'+esc(id)+'" aria-label="'+(playingNow?'Pause':'Play')+'"><svg viewBox="0 0 24 24" fill="currentColor">'+playIcon+'</svg></button>'
     + '<div class="bulk-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>'
-    + '</button>';
+    + '</div>';
 }
 function openBulkAdd(plId){
   const p = state.playlists.find(x=>x.id===plId); if(!p) return;
@@ -3240,6 +3295,7 @@ function openBulkAdd(plId){
   renderBulkCount();
   if(!bulkVList) bulkVList = new VList($('bulkAddList'), 116, (id)=>bulkRowHTML(id));
   bulkVList.setItems(bulkAddFilteredIds(), false);
+  updateBulkAddAZ();
   $('bulkAdd').classList.add('open');
   setTimeout(()=>{ try{ $('bulkSearchInput').focus(); }catch(e){} }, 320);
 }
@@ -3262,13 +3318,33 @@ function wireBulkAdd(){
     state.bulkAddSearch = e.target.value;
     $('bulkSearchBox').classList.toggle('has-text', !!state.bulkAddSearch);
     bulkVList.setItems(bulkAddFilteredIds(), true);
+    updateBulkAddAZ();
   });
   $('bulkSearchClear').addEventListener('click', ()=>{
     state.bulkAddSearch=''; $('bulkSearchInput').value='';
     $('bulkSearchBox').classList.remove('has-text');
     bulkVList.setItems(bulkAddFilteredIds(), true);
+    updateBulkAddAZ();
   });
   $('bulkAddList').addEventListener('click', e=>{
+    // Play button is nested inside the row — check it first and return,
+    // same pattern as the main list's "more options" button inside its
+    // own row (a <button> can't contain another <button>, which is why
+    // (a button can't contain another button, which is why the row
+    // itself is a plain element with data-act="bulktoggle" rather than a
+    // <button> — this lets a real <button> live inside it safely).
+    const playBtn = e.target.closest('[data-act="bulkplay"]');
+    if(playBtn){
+      const id = playBtn.getAttribute('data-id');
+      if(id===state.currentId && state.playing){
+        requestPause();
+      }else{
+        const ids = bulkAddFilteredIds();
+        const idx = ids.indexOf(id);
+        playContext(ids, idx>=0?idx:0);
+      }
+      return;
+    }
     const row = e.target.closest('[data-act="bulktoggle"]'); if(!row) return;
     const id = row.getAttribute('data-id');
     togglePlaylistSong(state.bulkAddPlId, id);
@@ -3278,6 +3354,23 @@ function wireBulkAdd(){
     renderBulkCount();
     Log.info((has?'Added "':'Removed "')+ (state.library.get(id)?.title||id) +'" '+(has?'to':'from')+' playlist "'+(p?p.name:'')+'"');
   });
+
+  // A–Z rail for the picker (tap + drag), same mechanics as the main list
+  // and the playlist detail rail.
+  const bulkRail = $('bulkAddAzRail');
+  const bulkAzHandler = (clientY)=>{
+    const btns = bulkRail.querySelectorAll('button'); if(!btns.length) return;
+    const rect = bulkRail.getBoundingClientRect();
+    let idx = Math.floor((clientY-rect.top)/rect.height*btns.length);
+    idx = Math.max(0, Math.min(btns.length-1, idx));
+    const letter = btns[idx].getAttribute('data-az');
+    if(letter) jumpToLetterBulkAdd(letter);
+  };
+  bulkRail.addEventListener('click', e=>{ const b=e.target.closest('[data-az]'); if(b) jumpToLetterBulkAdd(b.getAttribute('data-az')); });
+  let bulkAzActive=false;
+  bulkRail.addEventListener('touchstart', e=>{ bulkAzActive=true; bulkAzHandler(e.touches[0].clientY); e.preventDefault(); }, {passive:false});
+  bulkRail.addEventListener('touchmove', e=>{ if(bulkAzActive){ bulkAzHandler(e.touches[0].clientY); e.preventDefault(); } }, {passive:false});
+  bulkRail.addEventListener('touchend', ()=>{ bulkAzActive=false; });
 }
 
 /* ============================================================================

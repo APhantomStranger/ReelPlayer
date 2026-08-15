@@ -263,6 +263,13 @@
   }
   .btn-ghost:active{background:var(--surface-2);}
   .btn-ghost svg{width:24px;height:24px;}
+  .btn-danger{
+    display:flex;align-items:center;justify-content:center;gap:12px;width:100%;
+    height:72px;border-radius:18px;background:var(--danger);color:#2a0510;
+    font-weight:700;font-size:22px;transition:transform .12s;
+  }
+  .btn-danger:active{transform:scale(.98);}
+  .btn-danger svg{width:24px;height:24px;}
 
   .plrow{display:flex;align-items:center;gap:18px;padding:18px 20px;}
   .plrow:active{background:var(--surface);}
@@ -1156,6 +1163,17 @@
   <div class="opts" id="bookSpeedOpts" style="padding:8px 20px 20px;"></div>
 </div>
 
+<div class="sheet" id="sheetDeleteConfirm">
+  <div class="sheet-grab"></div>
+  <div class="sheet-title">Delete this song?</div>
+  <div class="sheet-sub" id="deleteConfirmSub"></div>
+  <div id="deleteConfirmBody" style="padding:4px 24px 22px;color:var(--muted);font-size:18px;line-height:1.5;"></div>
+  <div class="field-btns" style="padding:0 24px 24px;">
+    <button class="btn-ghost" id="deleteConfirmCancel">Cancel</button>
+    <button class="btn-danger" id="deleteConfirmGo">Delete from device</button>
+  </div>
+</div>
+
 <div class="sheet" id="sheetBookSleep">
   <div class="sheet-grab"></div>
   <div class="sheet-title">Sleep timer</div>
@@ -1247,8 +1265,21 @@ const state = {
   bulkAddSearch: '',
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.1.3';
+const APP_VERSION = '3.3.1';
 const CHANGELOG = [
+  { v:'3.3.1', date:'Aug 2, 2026', items:[
+    'Fixed intermittent pauses that needed a manual tap to resume, even while actively using the app (not just returning from the background). A pause caused by something outside Reel \u2014 a Bluetooth headset briefly reconnecting or changing audio route is the most common real-world cause \u2014 only ever got ONE automatic resume attempt. If that single attempt failed (which a mid-reconnect Bluetooth route change easily can), nothing else tried again unless you happened to switch away from the app and back. Now every unintended pause gets several follow-up attempts over the next few seconds, regardless of whether the app\u2019s visibility ever changed.',
+    'MediaSession play/pause actions (how lock-screen controls and headset buttons reach the app) are now logged, so a future report like this can distinguish "something explicitly told the app to pause" from "playback just stopped on its own."',
+  ]},
+  { v:'3.3.0', date:'Aug 2, 2026', items:[
+    'New: "Delete from device" in every song\'s ••• menu — removes the song from Reel\'s library AND deletes the actual file from your phone, permanently. Asks for confirmation first, clearly, since this can\'t be undone.',
+    'This is the one place Reel ever asks for more than read-only folder access: deleting a file needs write permission, which triggers its own separate browser-level prompt the first time you use this, in addition to Reel\'s own confirmation.',
+    'Deliberately all-or-nothing: if the file can\'t be reached, permission is declined, or the delete fails for any reason, nothing is touched \u2014 never a state where Reel forgets a song whose file is still actually on your phone.',
+    'Songs added without folder access (the manual file picker, on browsers without folder support) can\'t be deleted this way \u2014 Reel has no persistent link back to the file to remove it, and says so plainly rather than pretending to delete something it can\'t reach.',
+  ]},
+  { v:'3.2.0', date:'Aug 2, 2026', items:[
+    'New: Settings \u2192 Advanced \u2192 "Check library for mismatched files" scans your whole library at once and reports any song whose actual content doesn\'t match its file extension \u2014 e.g. an .mp3 that\'s really a renamed .wma from a conversion that silently failed on that one track. Only reads the first few bytes of each file (never the whole thing), and only reports \u2014 nothing gets changed, removed, or converted automatically. Results go to the debug log so you can find and re-convert the affected files yourself.',
+  ]},
   { v:'3.1.3', date:'Aug 2, 2026', items:[
     'When a song fails to play with a "format not supported" error, the debug log now also reports what the file\u2019s actual content looks like (by reading its real header bytes), not just its extension \u2014 so if a file is named .mp3 but doesn\u2019t actually contain MP3 data (a bad conversion, a straight rename, a corrupted transfer), that shows up immediately as e.g. "this .mp3 is actually a WMA file" instead of a dead-end error with no further clue.',
   ]},
@@ -2576,6 +2607,80 @@ async function sniffAudioFormat(file){
   }catch(e){ return null; }
 }
 
+/* Maps a file extension to the format "family" it should sniff as. Kept
+   deliberately small: only extensions where sniffAudioFormat can actually
+   tell real content apart from a mismatch. Anything not listed here is
+   skipped during the library check below rather than guessed at, so the
+   check never produces a false alarm for a format it can't verify. */
+function extFormatFamily(ext){
+  if(ext==='mp3') return 'mp3';
+  if(ext==='flac') return 'flac';
+  if(ext==='ogg'||ext==='oga'||ext==='opus') return 'ogg';
+  if(ext==='wav') return 'wav';
+  if(ext==='m4a'||ext==='mp4'||ext==='m4b') return 'mp4';
+  if(ext==='wma') return 'wma';
+  return null;
+}
+/* Reads sniffAudioFormat's own human-readable message back into the same
+   family tag, so this reuses its exact (already-tested) detection logic
+   as the single source of truth rather than duplicating the byte checks. */
+function sniffedFamily(detected){
+  if(/genuinely an MP3/.test(detected)) return 'mp3';
+  if(/WMA\/ASF/.test(detected)) return 'wma';
+  if(/^FLAC/.test(detected)) return 'flac';
+  if(/^OGG/.test(detected)) return 'ogg';
+  if(/^WAV\/RIFF/.test(detected)) return 'wav';
+  if(/^MP4\/M4A/.test(detected)) return 'mp4';
+  if(/all zero bytes/.test(detected)) return 'zero';
+  return 'unknown';
+}
+/* Non-destructive whole-library check: reads just the first bytes of every
+   song (cheap — never the whole file) and reports any whose actual content
+   doesn't match what its extension claims. Purely a report — nothing gets
+   modified, removed, or converted; the fix (re-converting or re-sourcing
+   the file) has to happen outside the app. Manual/on-demand from Settings,
+   not automatic, since reading every file in a large library does take a
+   few seconds and isn't something to run silently in the background. */
+async function checkLibraryFormats(){
+  const ids = Array.from(state.library.keys());
+  const total = ids.length;
+  if(total===0){ toastDone('No songs in your library to check', false); return {checked:0, mismatched:0}; }
+  toastShow('Checking library (0 of '+total+')…', true);
+  Log.info('Library format check started: '+total+' songs');
+  let checked = 0, mismatched = 0, skipped = 0;
+  for(const id of ids){
+    const s = state.library.get(id); if(!s) continue;
+    const ext = extOf(s.name);
+    const expected = extFormatFamily(ext);
+    if(!expected){ skipped++; continue; } // no reliable signature for this extension
+    checked++;
+    if(checked % 15 === 0 || checked===total){
+      toastProgress(checked/total, 'Checking '+checked+' of '+total+'…');
+    }
+    try{
+      const file = s.file || await fileForSong(s);
+      if(!file) continue;
+      const sniff = await sniffAudioFormat(file);
+      if(!sniff) continue;
+      const actual = sniffedFamily(sniff.detected);
+      if(actual !== expected){
+        mismatched++;
+        Log.warn('Mismatch: "'+s.title+'" ('+s.path+') is named .'+ext+' but its content is actually '+
+          (actual==='zero' ? 'all zero bytes (empty/incomplete)' : actual==='unknown' ? 'an unrecognized format' : actual.toUpperCase())+
+          ' — '+sniff.size+' bytes');
+      }
+    }catch(e){ /* couldn't read this one — skip it, don't fail the whole check */ }
+  }
+  const summary = 'Library format check: '+checked+' checked'+(skipped?', '+skipped+' skipped (no reliable check)':'')+', '+mismatched+' mismatched';
+  Log.info(summary);
+  if(mismatched===0){
+    toastDone(checked>0 ? 'All '+pluralize(checked,'song')+' match their file extension' : 'Nothing could be checked');
+  }else{
+    toastDone(pluralize(mismatched,'song')+' don\u2019t match their file extension \u2014 see debug log', false, true);
+  }
+  return {checked, mismatched, skipped};
+}
+
 async function playSong(id){
   const s = state.library.get(id);
   if(!s) return;
@@ -2718,22 +2823,45 @@ let intentionalPause = false;
 // Tracks the user's actual intent — "should Reel be playing right now" —
 // separately from state.playing (which reflects the audio element's
 // current, moment-to-moment state and can be knocked false by a single
-// failed resume attempt). This distinction is the fix for a real bug:
-// onAppForeground()'s retry safety net used to check state.playing as its
-// condition to attempt a resume — but if the FIRST resume attempt (from
-// the native 'pause' handler below) failed, it set state.playing=false,
-// which then made every one of onAppForeground's own follow-up retries
-// refuse to run, since they gate on that same now-corrupted flag. A single
-// transient failure — which is common right at the exact moment Android
-// hands audio focus back to the app — silenced its own recovery mechanism.
-// userWantsPlaying only changes on real user action (via requestPause) or
-// a genuinely successful play, so a failed attempt just means "try again,"
-// never "give up."
+// failed resume attempt). userWantsPlaying only changes on real user
+// action (via requestPause) or a genuinely successful play, so a failed
+// attempt just means "try again," never "give up."
 let userWantsPlaying = false;
 function requestPause(){
   intentionalPause = true;
   userWantsPlaying = false;
   try{ audio.pause(); }catch(e){}
+}
+
+/* Retries a resume attempt a handful of times over several seconds.
+   Originally this only ran from onAppForeground (returning to the app),
+   which left a real gap: if playback gets paused by something OUTSIDE
+   Reel while the app is already fully in view — a Bluetooth headset
+   briefly reconnecting, an audio-route change, anything that doesn't
+   involve switching away from the app — no visibilitychange event fires
+   at all, so that safety net never ran. The single immediate resume
+   attempt in the 'pause' handler below was the only try; if it failed
+   (which a mid-reconnect Bluetooth route change easily can), playback
+   just stayed stopped with nothing left to recover it. This is now
+   shared by both call sites, so ANY unintended pause gets several
+   follow-up attempts, not just ones tied to the app losing and regaining
+   visibility. Bounded (a fixed few attempts, not indefinite) and gated on
+   userWantsPlaying, so it stops as soon as the user genuinely pauses. */
+let resumeRetryToken = 0;
+function scheduleResumeRetries(reason){
+  const myToken = ++resumeRetryToken; // a newer retry sequence supersedes an older in-flight one
+  const attempt = (n, delay)=>{
+    setTimeout(()=>{
+      if(myToken !== resumeRetryToken) return;
+      if(!(userWantsPlaying && audio.paused && audio.src && !intentionalPause)) return;
+      Log.info('Resume retry '+n+' ('+reason+')');
+      audio.play().catch(()=>{ /* next scheduled attempt, if any, will still try */ });
+    }, delay);
+  };
+  attempt(1, 250);
+  attempt(2, 800);
+  attempt(3, 2000);
+  attempt(4, 5000);
 }
 
 audio.addEventListener('play', ()=>{ state.playing=true; userWantsPlaying=true; updatePlayButtons(); $('player').classList.remove('paused'); });
@@ -2745,11 +2873,10 @@ audio.addEventListener('pause', ()=>{
     $('player').classList.add('paused');
   }else{
     // Nothing in Reel asked for this pause — resume immediately.
+    Log.warn('Unintended pause (no visibility change) — attempting to resume');
     audio.play().catch(()=>{
-      // A resume attempt failing right now doesn't mean the user wants to
-      // stop — leave userWantsPlaying alone so later retries (including
-      // onAppForeground's own) still try again instead of giving up.
       state.playing=false; updatePlayButtons(); $('player').classList.add('paused');
+      scheduleResumeRetries('after unintended pause');
     });
   }
 });
@@ -2856,8 +2983,8 @@ function updateMediaSession(s){
     const url = artUrlCache.get(s.id);
     if(url) meta.artwork = [{src:url, sizes:'512x512', type:'image/jpeg'}];
     navigator.mediaSession.metadata = new MediaMetadata(meta);
-    navigator.mediaSession.setActionHandler('play', ()=>{ audio.play(); });
-    navigator.mediaSession.setActionHandler('pause', ()=>{ requestPause(); });
+    navigator.mediaSession.setActionHandler('play', ()=>{ Log.info('MediaSession: play action received (lock screen / headset / etc.)'); audio.play(); });
+    navigator.mediaSession.setActionHandler('pause', ()=>{ Log.info('MediaSession: pause action received (lock screen / headset / etc.)'); requestPause(); });
     navigator.mediaSession.setActionHandler('previoustrack', ()=>prevTrack());
     navigator.mediaSession.setActionHandler('nexttrack', ()=>nextTrack(false));
     navigator.mediaSession.setActionHandler('seekto', (d)=>{ if(d.seekTime!=null) audio.currentTime=d.seekTime; });
@@ -3027,6 +3154,7 @@ function openSongMenu(id){
   if(state.detail && state.detail.type==='playlist'){
     items.push({act:'m-remove', icon:'<line x1="5" y1="12" x2="19" y2="12"/>', label:'Remove from playlist', danger:true});
   }
+  items.push({act:'m-delete-device', icon:'<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>', label:'Delete from device', danger:true});
   $('menuItems').innerHTML = items.map(it=>menuItemHTML(it,id)).join('');
   openSheet($('sheetMenu'));
 }
@@ -3447,6 +3575,13 @@ function wire(){
   $('backupPlaylistsBtn').addEventListener('click', backupAllPlaylists);
   $('playlistImportInput').addEventListener('change', e=>{ if(e.target.files && e.target.files[0]) importPlaylistFile(e.target.files[0]); e.target.value=''; });
   $('newCancel').addEventListener('click', closeSheet);
+  $('deleteConfirmCancel').addEventListener('click', ()=>{ deleteConfirmTargetId=null; closeSheet(); });
+  $('deleteConfirmGo').addEventListener('click', async ()=>{
+    const id = deleteConfirmTargetId;
+    deleteConfirmTargetId = null;
+    closeSheet();
+    if(id) await deleteSongFromDevice(id);
+  });
   $('newCreate').addEventListener('click', ()=>{
     const name = $('newPlaylistName').value;
     if(editingPlaylistId){
@@ -3575,7 +3710,94 @@ function onMenuClick(e){
   else if(act==='m-album'){ const key = s.album+'\u0000'+s.artist; closePlayer(); openDetail('album', key); }
   else if(act==='m-artist'){ closePlayer(); openDetail('artist', s.artist); }
   else if(act==='m-remove'){ if(state.detail&&state.detail.plId){ removeFromPlaylist(state.detail.plId, id); openDetail('playlist', state.detail.plId);} }
+  else if(act==='m-delete-device'){ confirmDeleteFromDevice(id); }
 }
+/* ============================================================================
+   Delete a song from the device, permanently — not just from Reel.
+
+   This is the one place Reel ever asks for more than read-only folder
+   access. Everything else in the app only ever reads files; actually
+   deleting one requires 'readwrite' permission on the folder, which
+   triggers a real browser-level permission prompt the first time it's
+   needed — separate from, and in addition to, Reel's own confirmation
+   sheet below.
+
+   Deliberately all-or-nothing: the song is only removed from Reel's
+   library if the actual file was successfully deleted too. If the file
+   can't be reached, or permission is refused, or the delete call itself
+   fails, NOTHING is touched and the reason is shown clearly — never a
+   partial state where Reel forgets a song whose file is still sitting
+   on the device (which would just reappear, confusingly, on the next
+   scan, or — worse — never reappear at all if it can't be re-discovered).
+============================================================================ */
+let deleteConfirmTargetId = null;
+function confirmDeleteFromDevice(id){
+  const s = state.library.get(id); if(!s) return;
+  deleteConfirmTargetId = id;
+  $('deleteConfirmSub').textContent = s.title;
+  $('deleteConfirmBody').textContent = '"'+s.title+'" by '+s.artist+' will be permanently deleted from your device, not just removed from Reel. This can\u2019t be undone.';
+  openSheet($('sheetDeleteConfirm'));
+}
+async function resolveHandleForDeletion(s){
+  // .remove() lives on the FileSystemFileHandle itself, not on a File/Blob
+  // — fileForSong() normally hands back a File, so this mirrors its same
+  // resolution chain but keeps the handle instead.
+  if(s.handle) return s.handle;
+  if(state.dirHandle && s.path){
+    try{
+      const walked = await walkPath(state.dirHandle, s.path);
+      if(walked){ s.handle = walked; return walked; }
+    }catch(e){}
+  }
+  return null;
+}
+async function deleteSongFromDevice(id){
+  const s = state.library.get(id);
+  if(!s) return;
+  const title = s.title;
+
+  const handle = await resolveHandleForDeletion(s);
+  if(!handle || typeof handle.remove !== 'function'){
+    Log.warn('Delete from device: no file handle available for "'+title+'" — this song wasn\u2019t added via folder access, so Reel has no way to reach its file on disk. Nothing was removed.');
+    toastDone('Can\u2019t delete the file \u2014 this song wasn\u2019t added via folder access', false, true);
+    return;
+  }
+
+  try{
+    if(state.dirHandle && typeof state.dirHandle.queryPermission === 'function'){
+      let perm = await state.dirHandle.queryPermission({mode:'readwrite'});
+      if(perm !== 'granted'){
+        perm = await state.dirHandle.requestPermission({mode:'readwrite'});
+      }
+      if(perm !== 'granted'){
+        Log.warn('Delete from device: write permission was not granted for "'+title+'". Nothing was removed.');
+        toastDone('Permission needed to delete files \u2014 nothing was removed', false, true);
+        return;
+      }
+    }
+  }catch(e){
+    Log.warn('Delete from device: permission check failed for "'+title+'": '+(e&&e.message?e.message:e));
+    toastDone('Couldn\u2019t get permission to delete this file', false, true);
+    return;
+  }
+
+  // If this exact song is what's currently playing, stop it cleanly before
+  // pulling the file out from under it.
+  if(state.currentId===id && state.playing){ requestPause(); }
+
+  try{
+    await handle.remove();
+  }catch(e){
+    Log.error('Delete from device FAILED for "'+title+'": '+(e&&e.message?e.message:e));
+    toastDone('Couldn\u2019t delete the file: '+(e&&e.message?e.message:'unknown error'), false, true);
+    return;
+  }
+
+  Log.info('Deleted from device: "'+title+'" ('+s.path+')');
+  purgeSongsEverywhere([id]);
+  toastDone('\u201c'+title+'\u201d deleted from your device');
+}
+
 function insertNext(id){
   if(state.qIndex<0){ state.queue=[id]; state.qIndex=0; playSong(id); return; }
   state.queue.splice(state.qIndex+1,0,id);
@@ -3906,29 +4128,16 @@ function primeFolderPermission(){
 }
 
 function onAppForeground(){
-  // Safety net: with requestPause()/intentionalPause now tracking real user
-  // intent, the native 'pause' event listener already catches and reverses
-  // most unintended pauses instantly. This function is a second layer of
-  // insurance for the specific case of returning to the app — it re-checks
-  // a few times over the following seconds, since some Android/Chrome
-  // builds pause audio focus asynchronously a moment AFTER the page
-  // reports itself visible again, which a single immediate check could miss.
-  //
-  // Gated on userWantsPlaying, not state.playing — if an earlier resume
-  // attempt (e.g. the native 'pause' handler's own immediate retry) failed
-  // transiently, state.playing gets set false as a result, but that isn't
-  // the user asking to stop. Gating retries on state.playing would mean a
-  // single failed attempt silences every one of these follow-up retries —
-  // exactly the bug they exist to catch.
-  const tryResume = ()=>{
-    if(userWantsPlaying && audio.paused && audio.src && !intentionalPause){
-      audio.play().catch(()=>{ /* next retry (or next tap) will still try */ });
-    }
-  };
-  tryResume();
-  setTimeout(tryResume, 250);
-  setTimeout(tryResume, 800);
-  setTimeout(tryResume, 2000);
+  // Safety net for returning to the app: some Android/Chrome builds pause
+  // audio focus asynchronously a moment AFTER the page reports itself
+  // visible again, which a single immediate check could miss. Uses the
+  // same shared retry sequence as the native 'pause' handler above — see
+  // scheduleResumeRetries for why gating on userWantsPlaying (not
+  // state.playing) matters here.
+  if(userWantsPlaying && audio.paused && audio.src && !intentionalPause){
+    audio.play().catch(()=>{});
+  }
+  scheduleResumeRetries('app foreground');
 
   // Never trigger a folder rescan while the user wants a song playing.
   // Walking the whole folder tree and re-reading every file is heavy work;
@@ -4160,8 +4369,10 @@ function renderSettings(){
   for(const s of state.library.values()){ if(extOf(s.name)==='wma') wmaCount++; }
   html += '<div class="set-group"><h3>Advanced</h3><div class="set-card">'
     + '<button class="set-row" data-set="log"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></div><div class="sm"><div class="st">Debug log</div><div class="ss">'+Log.count()+' entries · actions, imports, playback &amp; errors</div></div>'+chev+'</button>'
+    + '<button class="set-row" data-set="checkformats"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg></div><div class="sm"><div class="st">Check library for mismatched files</div><div class="ss">Find songs whose actual content doesn\'t match their file extension</div></div>'+chev+'</button>'
     + '</div>'
     + '<div class="set-note">The log stays on your device and is never sent anywhere. Useful if something isn\'t working right and you want to see exactly what happened.</div>'
+    + '<div class="set-note" style="margin-top:10px;">A song can fail to play because it isn\'t really what its file extension claims \u2014 e.g. an .mp3 that\'s actually a renamed .wma from a conversion that didn\'t fully work. This check reads just the first few bytes of every song (never the whole file) and reports any mismatches to the debug log. It only reports \u2014 nothing gets changed, removed, or converted.</div>'
     + (wmaCount>0
         ? '<div class="set-note" style="margin-top:10px;color:var(--amber);">'+pluralize(wmaCount,'WMA file')+' in your library can\'t be played — Chrome has never shipped a WMA decoder, on any platform, so this can\'t be fixed from inside the browser. Convert them to mp3 on a computer (a free tool like VLC does this in a few clicks) and re-import.</div>'
         : '')
@@ -4190,6 +4401,9 @@ function onSettingsClick(e){
       const n = removeMissingSongs();
       toastDone(n>0 ? 'Removed '+pluralize(n,'missing song') : 'Nothing to clean up', n>0);
       renderSettings();
+    }
+    else if(a==='checkformats'){
+      checkLibraryFormats();
     }
     return;
   }
@@ -4758,8 +4972,8 @@ function updateBookMediaSession(){
   try{
     const meta = { title:b.title, artist:b.author||'Audiobook', album: b.parts.length>1? 'Chapter '+(state.currentPart+1) : '' };
     navigator.mediaSession.metadata = new MediaMetadata(meta);
-    navigator.mediaSession.setActionHandler('play', ()=>{ audio.play(); });
-    navigator.mediaSession.setActionHandler('pause', ()=>{ requestPause(); saveBookProgress(true); });
+    navigator.mediaSession.setActionHandler('play', ()=>{ Log.info('MediaSession: play action received (lock screen / headset / etc.)'); audio.play(); });
+    navigator.mediaSession.setActionHandler('pause', ()=>{ Log.info('MediaSession: pause action received (lock screen / headset / etc.)'); requestPause(); saveBookProgress(true); });
     // lock-screen prev/next map to ±30s for audiobooks
     navigator.mediaSession.setActionHandler('previoustrack', ()=>bookSkip(-30));
     navigator.mediaSession.setActionHandler('nexttrack', ()=>bookSkip(30));

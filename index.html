@@ -855,6 +855,19 @@
   #bulkSearchBox{flex:0 0 auto;}
   .bulkadd-title{font-size:24px;font-weight:700;text-align:center;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .bulkadd-count{font-size:20px;color:var(--amber);font-weight:700;font-family:var(--mono);flex:0 0 auto;min-width:64px;text-align:right;}
+  /* Duplicate finder — small result sets, so a plain scrolling list
+     (not the virtualized VList) is fine and simpler. */
+  .dup-scroll{position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;padding-bottom:20px;}
+  .dup-bottom{flex:0 0 auto;padding:14px 20px calc(var(--safe-b) + 16px);border-top:1px solid var(--line);}
+  .dup-group{margin:18px 0 6px;}
+  .dup-group-head{padding:0 20px 10px;font-size:20px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.02em;}
+  .dup-row{padding:14px 20px;gap:14px;}
+  .dup-row .row-main{min-width:0;}
+  .dup-row .row-title{font-size:26px;}
+  .dup-row .row-sub{font-size:18px;word-break:break-all;white-space:normal;overflow:visible;text-overflow:clip;}
+  .dup-badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;}
+  .dup-badge{font-size:15px;font-weight:700;padding:3px 9px;border-radius:8px;background:var(--surface-3);color:var(--muted);white-space:nowrap;}
+  .dup-badge-keep{background:var(--amber-dim);color:var(--amber);}
   .bulk-check{width:40px;height:40px;border-radius:50%;border:2.5px solid var(--line-2);display:grid;place-items:center;flex:0 0 auto;color:transparent;transition:background .12s,border-color .12s;}
   .bulk-play{width:52px;height:52px;border-radius:50%;flex:0 0 auto;display:grid;place-items:center;color:var(--text);background:var(--surface-2);border:1px solid var(--line-2);}
   .bulk-play:active{background:var(--surface-3);transform:scale(.94);}
@@ -1128,6 +1141,20 @@
   </div>
 </div>
 
+<div class="bulkadd" id="dupView">
+  <div class="bulkadd-top">
+    <button class="bulkadd-done" id="dupViewDone" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg><span>Back</span></button>
+    <div class="bulkadd-title">Duplicate songs</div>
+    <div class="bulkadd-count" id="dupViewCount"></div>
+  </div>
+  <div class="list-wrap">
+    <div class="dup-scroll" id="dupViewList"></div>
+  </div>
+  <div class="dup-bottom">
+    <button class="btn-danger" id="dupRemoveBtn" style="width:100%;">Remove selected</button>
+  </div>
+</div>
+
 <!-- Sheets -->
 <div class="scrim" id="scrim"></div>
 
@@ -1183,6 +1210,17 @@
   </div>
 </div>
 
+<div class="sheet" id="sheetDupConfirm">
+  <div class="sheet-grab"></div>
+  <div class="sheet-title">Remove duplicate files?</div>
+  <div class="sheet-sub" id="dupConfirmSub"></div>
+  <div id="dupConfirmBody" style="padding:4px 24px 22px;color:var(--muted);font-size:18px;line-height:1.5;"></div>
+  <div class="field-btns" style="padding:0 24px 24px;">
+    <button class="btn-ghost" id="dupConfirmCancel">Cancel</button>
+    <button class="btn-danger" id="dupConfirmGo">Remove from device</button>
+  </div>
+</div>
+
 <div class="sheet" id="sheetBookSleep">
   <div class="sheet-grab"></div>
   <div class="sheet-title">Sleep timer</div>
@@ -1226,7 +1264,7 @@ function fmtTime(s){
   return m+':'+String(sec).padStart(2,'0');
 }
 function esc(str){ return (str==null?'':String(str)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function pluralize(n,w){ return n+' '+w+(n===1?'':'s'); }
+function pluralize(n,w,pl){ return n+' '+(n===1 ? w : (pl!==undefined ? pl : w+'s')); }
 function collator(){ return new Intl.Collator(undefined,{sensitivity:'base',numeric:true}); }
 const COLL = collator();
 
@@ -1272,10 +1310,26 @@ const state = {
   // ---- bulk add songs to playlist ----
   bulkAddPlId: null,
   bulkAddSearch: '',
+  // ---- duplicate finder ----
+  dupGroups: [],           // array of {ids:[...], keeperId} from the last scan
+  dupSelected: new Set(),  // ids currently marked for removal in the open dup view
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.4.0';
+const APP_VERSION = '3.5.1';
 const CHANGELOG = [
+  { v:'3.5.1', date:'Aug 27, 2026', items:[
+    'Diagnostic build \u2014 no behavior changes. Adds detailed logging to two intermittent bugs (the occasional garbled/stuttery start when a song auto-advances, and unexpected pauses on bluetooth headphones) so the next time either happens, Settings \u2192 Advanced \u2192 Debug log will have enough information to root-cause it.',
+    'Every track transition now records the audio element\u2019s state before AND after the new file is loaded (readyState, networkState, buffered ranges, currentTime, decoder error if any) plus how long the load-to-play step actually took. If auto-advance produces garbled audio, the pattern will show up as a difference between the pre-swap and post-swap state or an unusually long load-to-play delay.',
+    'Every unintended pause now logs the full audio state at the moment it happened, plus how long the song had been playing when it paused \u2014 useful for distinguishing a bluetooth-drop pause (network/decoder reset) from an audio-focus-loss pause (clean state, another app took over) from a buffer-starve. Each retry attempt also now logs whether it succeeded or failed, not just that it ran.',
+    'New "Stalled" and "Waiting for data" log entries for the two audio-element events that fire when playback runs out of buffered data \u2014 both common precursors to a bluetooth pause. Logged at most once per song to avoid flooding the log if a bluetooth device is flaky through a whole track.',
+    'When these bugs happen next: go to Settings \u2192 Advanced \u2192 Debug log \u2192 Save, and share the .txt file. The transition trace or the pause diagnostic will be in there.',
+  ]},
+  { v:'3.5.0', date:'Aug 27, 2026', items:[
+    'New: Settings \u2192 Advanced \u2192 "Find duplicate songs" scans your whole library for copies of the same song. It checks the actual audio content, not just the filename or title \u2014 two files with the same title but genuinely different audio (a live version, a remaster, a cover) are correctly left alone, while two copies of the same recording with different tags, embedded art, or filenames are correctly caught.',
+    'When duplicates are found, Reel picks a "keeper" for each group automatically \u2014 preferring a copy that\u2019s already in one of your playlists or favourited, so a cleanup never quietly breaks something you built. You can review and change the selection before anything is removed; each group always keeps at least one copy.',
+    'Removing duplicates deletes the actual files from your phone, the same as "Delete from device" on a single song \u2014 asks for confirmation first, and if the folder permission prompt is declined, nothing is touched. Removing several duplicates at once now only asks for that permission a single time, not once per file.',
+    'If one file in a batch fails to delete (permission hiccup, file already gone, etc.) the others still go through \u2014 a single failure doesn\u2019t block or partially desync the rest of the cleanup.',
+  ]},
   { v:'3.4.0', date:'Aug 2, 2026', items:[
     'The "Add songs" picker now has the same A\u2013Z fast-scroll rail as the main Songs list \u2014 drag down the letters on the right edge to jump straight to that part of your library instead of scrolling through everything.',
     'Every song in the "Add songs" picker now has its own play button, separate from the checkmark that adds/removes it from the playlist \u2014 tap it to preview a song right from the picker without leaving it, so you can keep browsing and adding songs while it plays. Tapping it again pauses; the row highlights and shows a small equalizer animation while that song is playing, matching how the rest of the app shows what\u2019s currently playing.',
@@ -2728,6 +2782,140 @@ async function checkLibraryFormats(){
   return {checked, mismatched, skipped};
 }
 
+/* ============================================================================
+   DUPLICATE SONG FINDER (v3.5.0)
+   Three stages, cheapest first:
+   1. Group by normalized title — free, no file reads.
+   2. Within each same-title group, fingerprint actual audio content and
+      subgroup by that — this is what actually confirms a duplicate.
+      Fingerprinting skips past the ID3 tag first, so two copies that
+      differ only in tags (different embedded art, a re-tag, etc.) still
+      match on their real audio content. A same-title group that fingerprints
+      to DIFFERENT hashes is correctly left alone (e.g. a live version and
+      a studio version can share a title but aren't duplicates).
+   3. Within each confirmed-duplicate subgroup, pick a keeper — prefers a
+      copy that's referenced by a playlist or favorited, so removal doesn't
+      quietly break something the user built.
+============================================================================ */
+function normalizeTitleForDup(title){
+  return (title||'').toLowerCase().trim().replace(/\s+/g,' ').replace(/[^\w\s]/g,'');
+}
+
+/* 32-bit FNV-1a over an ArrayBuffer, as hex. Only used when crypto.subtle
+   isn't available (non-secure context) — SHA-256 is strongly preferred and
+   used whenever possible; see audioFingerprint below. */
+function fnv1aHex(buf){
+  const u8 = new Uint8Array(buf);
+  let h = 0x811c9dc5;
+  for(let i=0;i<u8.length;i++){
+    h ^= u8[i];
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h>>>0).toString(16).padStart(8,'0');
+}
+
+/* Fingerprints a file's actual audio content, skipping the ID3v2 tag (mp3
+   only — that's the one tag format this app already parses) so tag-only
+   differences between two copies don't prevent a real match. Prefers
+   SHA-256 via crypto.subtle; falls back to FNV-1a if unavailable (e.g. a
+   non-secure context, or a test environment without WebCrypto). */
+async function audioFingerprint(file, ext){
+  let start = 0;
+  if(ext==='mp3'){
+    try{
+      const head = await readHead(file, 64*1024);
+      const declared = id3DeclaredSize(head);
+      if(declared>0 && declared<file.size) start = declared;
+    }catch(e){ /* fall back to hashing from byte 0 */ }
+  }
+  const buf = await file.slice(start).arrayBuffer();
+  if(typeof crypto!=='undefined' && crypto.subtle && typeof crypto.subtle.digest==='function'){
+    try{
+      const digest = await crypto.subtle.digest('SHA-256', buf);
+      return 'sha256:'+Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,'0')).join('');
+    }catch(e){ /* fall through to FNV */ }
+  }
+  return 'fnv:'+fnv1aHex(buf);
+}
+
+/* Prefers a copy referenced by a playlist, then a favorited copy, then
+   just the first one found — so the default selection never quietly
+   removes the copy something else in the app depends on. */
+function pickDupKeeper(ids){
+  for(const id of ids){ if(state.playlists.some(p=>p.songIds.includes(id))) return id; }
+  for(const id of ids){ if(state.favSet.has(id)) return id; }
+  return ids[0];
+}
+
+async function findDuplicates(){
+  const ids = Array.from(state.library.keys());
+  if(ids.length===0){ toastDone('No songs in your library to check', false); return {groups:[]}; }
+
+  // Stage 1: cheap grouping by normalized title
+  const byTitle = new Map();
+  for(const id of ids){
+    const s = state.library.get(id); if(!s) continue;
+    const key = normalizeTitleForDup(s.title);
+    if(!key) continue;
+    if(!byTitle.has(key)) byTitle.set(key, []);
+    byTitle.get(key).push(id);
+  }
+  const candidates = Array.from(byTitle.values()).filter(g=>g.length>=2);
+  if(candidates.length===0){
+    Log.info('Duplicate scan: no same-title matches among '+ids.length+' songs');
+    toastDone('No duplicate songs found');
+    return {groups:[]};
+  }
+
+  // Stage 2: within each same-title group, fingerprint audio content and
+  // subgroup by matching hash — this is what actually confirms a duplicate.
+  toastShow('Checking for duplicates (0 of '+candidates.length+')…', true);
+  Log.info('Duplicate scan started: '+candidates.length+' same-title group(s) to check');
+  const confirmed = [];
+  let processed = 0;
+  for(const group of candidates){
+    processed++;
+    if(processed % 3 === 0 || processed===candidates.length){
+      toastProgress(processed/candidates.length, 'Checking '+processed+' of '+candidates.length+'…');
+      await new Promise(r=>setTimeout(r,0)); // yield to keep UI responsive
+    }
+    const byHash = new Map();
+    for(const id of group){
+      const s = state.library.get(id); if(!s) continue;
+      try{
+        const file = s.file || await fileForSong(s);
+        if(!file) continue;
+        const hash = await audioFingerprint(file, extOf(s.name));
+        if(!byHash.has(hash)) byHash.set(hash, []);
+        byHash.get(hash).push(id);
+      }catch(e){
+        Log.warn('Duplicate scan: could not fingerprint "'+s.title+'": '+(e&&e.message?e.message:e));
+      }
+    }
+    for(const memberIds of byHash.values()){
+      if(memberIds.length>=2) confirmed.push({ids:memberIds, keeperId:pickDupKeeper(memberIds)});
+    }
+  }
+
+  if(confirmed.length===0){
+    Log.info('Duplicate scan complete: '+candidates.length+' title match(es) checked, no confirmed audio duplicates');
+    toastDone('No duplicate songs found');
+    return {groups:[]};
+  }
+
+  const totalSongs = confirmed.reduce((a,g)=>a+g.ids.length,0);
+  Log.info('Duplicate scan complete: '+confirmed.length+' duplicate group(s) found, '+totalSongs+' songs total');
+  toastDone(pluralize(confirmed.length,'duplicate group')+' found');
+
+  state.dupGroups = confirmed;
+  state.dupSelected = new Set();
+  for(const g of confirmed){
+    for(const id of g.ids){ if(id!==g.keeperId) state.dupSelected.add(id); }
+  }
+  openDupView();
+  return {groups:confirmed};
+}
+
 async function playSong(id){
   const s = state.library.get(id);
   if(!s) return;
@@ -2751,16 +2939,25 @@ async function playSong(id){
     return;
   }
   if(currentObjectUrl){ try{ URL.revokeObjectURL(currentObjectUrl); }catch(e){} }
+  // Diagnostic: capture audio state BEFORE the src swap. If auto-advance
+  // sometimes produces garbled output (v3.5.1 investigation), this line
+  // pairs with the "Playing" line's post-swap state below to show whether
+  // the element was in a clean just-ended state or still busy with the
+  // previous track when the new src was assigned.
+  Log.info('Loading "'+s.title+'" \u00b7 pre-swap '+audioDiag());
+  stallLoggedForSrc = false;
+  waitLoggedForSrc = false;
   currentObjectUrl = URL.createObjectURL(file);
   audio.src = currentObjectUrl;
   state.currentId = id;
   audio.playbackRate = state.speed;
   if(state.eqEnabled) ensureEQ();
   pushRecent(id);
+  const loadStart = Date.now();
   try{
     await audio.play();
     state.playing = true;
-    Log.info('Playing "'+s.title+'" by '+s.artist);
+    Log.info('Playing "'+s.title+'" by '+s.artist+' \u00b7 load-to-play '+(Date.now()-loadStart)+'ms \u00b7 '+audioDiag());
   }catch(e){
     state.playing = false;
     const name = e && e.name;
@@ -2851,7 +3048,12 @@ function togglePlay(){
   updatePlayButtons();
 }
 
-audio.addEventListener('ended', ()=>{ if(state.mode==='book') bookOnEnded(); else nextTrack(true); });
+audio.addEventListener('ended', ()=>{
+  if(state.mode==='book'){ bookOnEnded(); return; }
+  const s = state.library.get(state.currentId);
+  Log.info('Track ended \u2014 "'+(s?s.title:'?')+'" \u00b7 '+audioDiag());
+  nextTrack(true);
+});
 /* ============================================================================
    Pause intent tracking.
    Android/Chrome can silently call .pause() on the <audio> element for
@@ -2901,8 +3103,13 @@ function scheduleResumeRetries(reason){
     setTimeout(()=>{
       if(myToken !== resumeRetryToken) return;
       if(!(userWantsPlaying && audio.paused && audio.src && !intentionalPause)) return;
-      Log.info('Resume retry '+n+' ('+reason+')');
-      audio.play().catch(()=>{ /* next scheduled attempt, if any, will still try */ });
+      Log.info('Resume retry '+n+' ('+reason+') \u00b7 '+audioDiag());
+      audio.play().then(()=>{
+        Log.info('Resume retry '+n+' succeeded');
+      }).catch(e=>{
+        Log.warn('Resume retry '+n+' failed: '+(e&&e.name?e.name:String(e)));
+        /* next scheduled attempt, if any, will still try */
+      });
     }, delay);
   };
   attempt(1, 250);
@@ -2911,7 +3118,24 @@ function scheduleResumeRetries(reason){
   attempt(4, 5000);
 }
 
-audio.addEventListener('play', ()=>{ state.playing=true; userWantsPlaying=true; updatePlayButtons(); $('player').classList.remove('paused'); markPlayingRows(); });
+/* Stalled: browser is trying to fetch media data but nothing is arriving.
+   Waiting: playback stopped because the next frame isn't available yet
+   (buffer starve). Both are one-per-song — if a bluetooth device is
+   flaky through a whole song these would otherwise flood the log. */
+audio.addEventListener('stalled', ()=>{
+  if(stallLoggedForSrc) return;
+  stallLoggedForSrc = true;
+  const s = state.library.get(state.currentId);
+  Log.warn('Stalled \u2014 "'+(s?s.title:'?')+'" \u00b7 '+audioDiag()+' (further stalls on this track will not re-log)');
+});
+audio.addEventListener('waiting', ()=>{
+  if(waitLoggedForSrc) return;
+  waitLoggedForSrc = true;
+  const s = state.library.get(state.currentId);
+  Log.warn('Waiting for data \u2014 "'+(s?s.title:'?')+'" \u00b7 '+audioDiag()+' (further waits on this track will not re-log)');
+});
+
+audio.addEventListener('play', ()=>{ lastPlayEventAt=Date.now(); state.playing=true; userWantsPlaying=true; updatePlayButtons(); $('player').classList.remove('paused'); markPlayingRows(); });
 audio.addEventListener('pause', ()=>{
   if(intentionalPause){
     intentionalPause = false;
@@ -2919,14 +3143,24 @@ audio.addEventListener('pause', ()=>{
     updatePlayButtons();
     $('player').classList.add('paused');
     markPlayingRows();
-  }else{
-    // Nothing in Reel asked for this pause — resume immediately.
-    Log.warn('Unintended pause (no visibility change) — attempting to resume');
-    audio.play().catch(()=>{
-      state.playing=false; updatePlayButtons(); $('player').classList.add('paused'); markPlayingRows();
-      scheduleResumeRetries('after unintended pause');
-    });
+    return;
   }
+  // Nothing in Reel asked for this pause — capture full state so a real
+  // debug-log excerpt from a device can distinguish the actual causes
+  // (bluetooth drop = readyState=0/networkState=3; buffer starve =
+  // ready<2 with buf=0-ranges; audio focus loss = ready=4 + error=none;
+  // decode failure = err set) instead of just "something paused it".
+  const s = state.library.get(state.currentId);
+  const since = lastPlayEventAt ? (Date.now()-lastPlayEventAt)+'ms since play started' : 'no prior play';
+  Log.warn('Unintended pause \u2014 "'+(s?s.title:'?')+'" \u00b7 '+audioDiag()+' \u00b7 '+since);
+  const t0 = Date.now();
+  audio.play().then(()=>{
+    Log.info('Immediate resume succeeded ('+(Date.now()-t0)+'ms)');
+  }).catch(e=>{
+    Log.warn('Immediate resume failed: '+(e&&e.name?e.name:String(e))+' \u2014 scheduling retries \u00b7 '+audioDiag());
+    state.playing=false; updatePlayButtons(); $('player').classList.add('paused'); markPlayingRows();
+    scheduleResumeRetries('after unintended pause');
+  });
 });
 audio.addEventListener('timeupdate', updateProgress);
 audio.addEventListener('loadedmetadata', ()=>{
@@ -2941,6 +3175,40 @@ audio.addEventListener('loadedmetadata', ()=>{
   }
 });
 const MEDIA_ERROR_NAMES = {1:'aborted',2:'network error',3:'decode error (unsupported codec)',4:'format not supported by this browser'};
+/* Compact audio-element diagnostic string, used everywhere the log
+   captures "what was the audio element actually doing when X happened".
+   readyState: 0=NOTHING 1=METADATA 2=CURRENT_DATA 3=FUTURE_DATA 4=ENOUGH.
+   networkState: 0=EMPTY 1=IDLE 2=LOADING 3=NO_SOURCE.
+   buffered.length + first buffered range is often the smoking gun for
+   Bluetooth-triggered pauses (0 buffered ranges = decoder just starved). */
+function audioDiag(){
+  try{
+    const t = (audio.currentTime||0).toFixed(2);
+    const d = audio.duration;
+    const dStr = (d && isFinite(d)) ? d.toFixed(2) : String(d);
+    let buf = 'n/a';
+    try{
+      const b = audio.buffered;
+      if(b && typeof b.length==='number'){
+        buf = b.length===0 ? '0-ranges' : (b.length+'x, end='+b.end(b.length-1).toFixed(2));
+      }
+    }catch(e){}
+    const err = audio.error ? (audio.error.code+':'+(MEDIA_ERROR_NAMES[audio.error.code]||'unknown')) : 'none';
+    return 'ready='+audio.readyState+' net='+audio.networkState
+      +' paused='+audio.paused+' ended='+audio.ended
+      +' t='+t+'/'+dStr+' buf='+buf+' err='+err;
+  }catch(e){ return 'diag-failed:'+(e&&e.message?e.message:e); }
+}
+/* Track pauses/stalls/waits ONCE per src so switching songs while a
+   bluetooth device is flaky doesn't spam the log with the same event
+   over and over. These reset in playSong when a new track loads. */
+let stallLoggedForSrc = false;
+let waitLoggedForSrc = false;
+/* Wall-clock timestamp of the last successful 'play' event, so a later
+   unintended pause can be reported with "12500ms since play started" —
+   useful for spotting whether pauses cluster right after a track starts
+   (decoder-warmup issue?) vs mid-track (buffer starve / audio focus). */
+let lastPlayEventAt = 0;
 audio.addEventListener('error', ()=>{
   // Some formats (WMA in particular — Chrome has never shipped a WMA
   // decoder, on Android or anywhere else) can fail to decode without
@@ -3374,6 +3642,145 @@ function wireBulkAdd(){
 }
 
 /* ============================================================================
+   DUPLICATE FINDER — UI
+   Full-screen overlay (reuses the .bulkadd slide-up), plain HTML rows
+   (not the virtualized VList — duplicate groups are small, unlike the
+   full library, so virtualizing them isn't worth the extra mechanism).
+============================================================================ */
+function formatBytes(n){
+  if(n==null) return '';
+  if(n < 1024) return n+' B';
+  if(n < 1024*1024) return (n/1024).toFixed(0)+' KB';
+  return (n/(1024*1024)).toFixed(1)+' MB';
+}
+function dupMemberBadgesHTML(id, group){
+  const badges = [];
+  if(id===group.keeperId) badges.push('<span class="dup-badge dup-badge-keep">Keeping this one</span>');
+  const pl = state.playlists.find(p=>p.songIds.includes(id));
+  if(pl) badges.push('<span class="dup-badge">In \u201c'+esc(pl.name)+'\u201d</span>');
+  if(state.favSet.has(id)) badges.push('<span class="dup-badge">Favourited</span>');
+  return badges.length ? '<div class="dup-badges">'+badges.join('')+'</div>' : '';
+}
+function dupRowHTML(id, group){
+  const s = state.library.get(id);
+  if(!s) return '';
+  const checked = state.dupSelected.has(id);
+  return '<div class="row dup-row bulkrow'+(checked?' checked':'')+'" data-id="'+esc(id)+'" data-act="duptoggle">'
+    + '<div class="row-main">'
+    + '<div class="row-title">'+esc(s.title)+'</div>'
+    + '<div class="row-sub">'+esc(s.path)+'</div>'
+    + '<div class="row-sub">'+formatBytes(s.size)+'</div>'
+    + dupMemberBadgesHTML(id, group)
+    + '</div>'
+    + '<div class="bulk-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>'
+    + '</div>';
+}
+function dupGroupHTML(group){
+  const first = state.library.get(group.ids[0]);
+  const title = first ? first.title : '';
+  let html = '<div class="dup-group">';
+  html += '<div class="dup-group-head">'+esc(title)+' \u00b7 '+pluralize(group.ids.length,'copy','copies')+'</div>';
+  for(const id of group.ids){ html += dupRowHTML(id, group); }
+  html += '</div>';
+  return html;
+}
+function renderDupView(){
+  // Drop any group that's collapsed to a single remaining copy (or fewer)
+  // since the last render — nothing left to choose between.
+  state.dupGroups = state.dupGroups.filter(g=>g.ids.length>=2);
+  $('dupViewList').innerHTML = state.dupGroups.map(dupGroupHTML).join('');
+  updateDupCount();
+  if(state.dupGroups.length===0) closeDupView();
+}
+function updateDupCount(){
+  const n = state.dupSelected.size;
+  $('dupViewCount').textContent = n>0 ? (n+' selected') : '';
+  const btn = $('dupRemoveBtn');
+  btn.disabled = n===0;
+  btn.style.opacity = n===0 ? '.5' : '1';
+}
+function openDupView(){
+  renderDupView();
+  $('dupView').classList.add('open');
+}
+function closeDupView(){
+  $('dupView').classList.remove('open');
+  state.dupGroups = [];
+  state.dupSelected = new Set();
+}
+function toggleDupSelection(id){
+  const group = state.dupGroups.find(g=>g.ids.includes(id));
+  if(!group) return;
+  if(state.dupSelected.has(id)){
+    state.dupSelected.delete(id);
+  }else{
+    // Guard: never allow every copy in a group to be selected — at least
+    // one has to survive, or "remove duplicates" would just delete the
+    // song entirely rather than de-duplicating it.
+    const selectedInGroup = group.ids.filter(x=>state.dupSelected.has(x)).length;
+    if(selectedInGroup + 1 >= group.ids.length){
+      toastDone('Keep at least one copy in each group', false, true);
+      return;
+    }
+    state.dupSelected.add(id);
+  }
+  renderDupView();
+}
+async function removeDuplicates(ids){
+  if(!ids || ids.length===0) return {removed:0, failed:0};
+  const perm = await ensureFolderWritePermission();
+  if(!perm.granted){
+    Log.warn('Duplicate removal: write permission was not granted. Nothing was removed.');
+    toastDone('Permission needed to delete files \u2014 nothing was removed', false, true);
+    return {removed:0, failed:ids.length};
+  }
+  toastShow('Removing '+pluralize(ids.length,'duplicate')+'\u2026', true);
+  let removed = 0, failed = 0;
+  const removedIds = [];
+  for(let i=0;i<ids.length;i++){
+    const id = ids[i];
+    const result = await deleteSongFileOnly(id);
+    if(result.ok){ removed++; removedIds.push(id); }
+    else{ failed++; }
+    toastProgress((i+1)/ids.length, (i+1)+' / '+ids.length);
+  }
+  if(removedIds.length>0){
+    const removedSet = new Set(removedIds);
+    for(const g of state.dupGroups){ g.ids = g.ids.filter(x=>!removedSet.has(x)); }
+    for(const id of removedIds){ state.dupSelected.delete(id); }
+    purgeSongsEverywhere(removedIds);
+  }
+  Log.info('Duplicate removal complete: '+removed+' removed'+(failed?', '+failed+' failed':''));
+  if(failed===0){
+    toastDone(pluralize(removed,'duplicate')+' removed');
+  }else{
+    toastDone(removed+' removed, '+failed+' failed \u2014 see debug log', false, true);
+  }
+  renderDupView();
+  return {removed, failed};
+}
+function wireDupView(){
+  $('dupViewDone').addEventListener('click', closeDupView);
+  $('dupViewList').addEventListener('click', e=>{
+    const row = e.target.closest('[data-act="duptoggle"]'); if(!row) return;
+    toggleDupSelection(row.getAttribute('data-id'));
+  });
+  $('dupRemoveBtn').addEventListener('click', ()=>{
+    const n = state.dupSelected.size;
+    if(n===0) return;
+    $('dupConfirmSub').textContent = pluralize(n,'file');
+    $('dupConfirmBody').textContent = pluralize(n,'duplicate file')+' will be permanently deleted from your device, not just removed from Reel. This can\u2019t be undone.';
+    openSheet($('sheetDupConfirm'));
+  });
+  $('dupConfirmCancel').addEventListener('click', closeSheet);
+  $('dupConfirmGo').addEventListener('click', async ()=>{
+    const ids = Array.from(state.dupSelected);
+    closeSheet();
+    await removeDuplicates(ids);
+  });
+}
+
+/* ============================================================================
    Playlists CRUD
 ============================================================================ */
 let addTargetId = null;
@@ -3720,6 +4127,7 @@ function wire(){
   wireAudiobooks();
   wireLogView();
   wireBulkAdd();
+  wireDupView();
 }
 
 function importFlow(){
@@ -3844,11 +4252,66 @@ async function resolveHandleForDeletion(s){
   }
   return null;
 }
+/* Checks (and if needed, requests) readwrite permission on the root folder
+   handle. Extracted out of deleteSongFromDevice in v3.5.0 so the duplicate-
+   removal batch can call it ONCE up front instead of once per file — the
+   browser's own permission prompt only needs to appear a single time.
+   Returns {granted, errored, message}. errored distinguishes "the browser
+   said no" from "the permission check itself threw", since the two get
+   different toast copy in the single-delete flow. */
+async function ensureFolderWritePermission(){
+  if(!state.dirHandle || typeof state.dirHandle.queryPermission !== 'function'){
+    // No FS Access folder handle to check against (e.g. this song came in
+    // through the webkitdirectory fallback) — nothing to gate on here.
+    return {granted:true, errored:false};
+  }
+  try{
+    let perm = await state.dirHandle.queryPermission({mode:'readwrite'});
+    if(perm !== 'granted'){
+      perm = await state.dirHandle.requestPermission({mode:'readwrite'});
+    }
+    return {granted: perm==='granted', errored:false};
+  }catch(e){
+    return {granted:false, errored:true, message:(e&&e.message?e.message:String(e))};
+  }
+}
+
+/* Deletes exactly one song's file from disk. Assumes write permission has
+   ALREADY been granted (call ensureFolderWritePermission first — once,
+   even for a batch of many songs) and does NOT touch the in-app library;
+   the caller decides what to do with the library based on the result.
+   knownHandle lets a caller that already resolved the handle skip doing
+   it twice. Returns {ok:true} or {ok:false, reason, message}. */
+async function deleteSongFileOnly(id, knownHandle){
+  const s = state.library.get(id);
+  if(!s) return {ok:false, reason:'missing', message:'Song not found'};
+  const title = s.title;
+  const handle = knownHandle || await resolveHandleForDeletion(s);
+  if(!handle || typeof handle.remove !== 'function'){
+    Log.warn('Delete from device: no file handle available for "'+title+'" — this song wasn\u2019t added via folder access, so Reel has no way to reach its file on disk. Nothing was removed.');
+    return {ok:false, reason:'no-handle', message:'Can\u2019t delete the file \u2014 this song wasn\u2019t added via folder access'};
+  }
+  // If this exact song is what's currently playing, stop it cleanly before
+  // pulling the file out from under it.
+  if(state.currentId===id && state.playing){ requestPause(); }
+  try{
+    await handle.remove();
+  }catch(e){
+    Log.error('Delete from device FAILED for "'+title+'": '+(e&&e.message?e.message:e));
+    return {ok:false, reason:'remove-failed', message:'Couldn\u2019t delete the file: '+(e&&e.message?e.message:'unknown error')};
+  }
+  Log.info('Deleted from device: "'+title+'" ('+s.path+')');
+  return {ok:true};
+}
+
 async function deleteSongFromDevice(id){
   const s = state.library.get(id);
   if(!s) return;
   const title = s.title;
 
+  // Resolve the handle up front so a missing-handle case reports its own
+  // specific message without ever triggering a write-permission prompt
+  // for a song that could never be deleted anyway.
   const handle = await resolveHandleForDeletion(s);
   if(!handle || typeof handle.remove !== 'function'){
     Log.warn('Delete from device: no file handle available for "'+title+'" — this song wasn\u2019t added via folder access, so Reel has no way to reach its file on disk. Nothing was removed.');
@@ -3856,37 +4319,24 @@ async function deleteSongFromDevice(id){
     return;
   }
 
-  try{
-    if(state.dirHandle && typeof state.dirHandle.queryPermission === 'function'){
-      let perm = await state.dirHandle.queryPermission({mode:'readwrite'});
-      if(perm !== 'granted'){
-        perm = await state.dirHandle.requestPermission({mode:'readwrite'});
-      }
-      if(perm !== 'granted'){
-        Log.warn('Delete from device: write permission was not granted for "'+title+'". Nothing was removed.');
-        toastDone('Permission needed to delete files \u2014 nothing was removed', false, true);
-        return;
-      }
+  const perm = await ensureFolderWritePermission();
+  if(!perm.granted){
+    if(perm.errored){
+      Log.warn('Delete from device: permission check failed for "'+title+'": '+perm.message);
+      toastDone('Couldn\u2019t get permission to delete this file', false, true);
+    }else{
+      Log.warn('Delete from device: write permission was not granted for "'+title+'". Nothing was removed.');
+      toastDone('Permission needed to delete files \u2014 nothing was removed', false, true);
     }
-  }catch(e){
-    Log.warn('Delete from device: permission check failed for "'+title+'": '+(e&&e.message?e.message:e));
-    toastDone('Couldn\u2019t get permission to delete this file', false, true);
     return;
   }
 
-  // If this exact song is what's currently playing, stop it cleanly before
-  // pulling the file out from under it.
-  if(state.currentId===id && state.playing){ requestPause(); }
-
-  try{
-    await handle.remove();
-  }catch(e){
-    Log.error('Delete from device FAILED for "'+title+'": '+(e&&e.message?e.message:e));
-    toastDone('Couldn\u2019t delete the file: '+(e&&e.message?e.message:'unknown error'), false, true);
+  const result = await deleteSongFileOnly(id, handle);
+  if(!result.ok){
+    toastDone(result.message, false, true);
     return;
   }
 
-  Log.info('Deleted from device: "'+title+'" ('+s.path+')');
   purgeSongsEverywhere([id]);
   toastDone('\u201c'+title+'\u201d deleted from your device');
 }
@@ -4463,6 +4913,7 @@ function renderSettings(){
   html += '<div class="set-group"><h3>Advanced</h3><div class="set-card">'
     + '<button class="set-row" data-set="log"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></div><div class="sm"><div class="st">Debug log</div><div class="ss">'+Log.count()+' entries · actions, imports, playback &amp; errors</div></div>'+chev+'</button>'
     + '<button class="set-row" data-set="checkformats"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg></div><div class="sm"><div class="st">Check library for mismatched files</div><div class="ss">Find songs whose actual content doesn\'t match their file extension</div></div>'+chev+'</button>'
+    + '<button class="set-row" data-set="dupfind"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></div><div class="sm"><div class="st">Find duplicate songs</div><div class="ss">Match by title and audio content, not just filename</div></div>'+chev+'</button>'
     + '</div>'
     + '<div class="set-note">The log stays on your device and is never sent anywhere. Useful if something isn\'t working right and you want to see exactly what happened.</div>'
     + '<div class="set-note" style="margin-top:10px;">A song can fail to play because it isn\'t really what its file extension claims \u2014 e.g. an .mp3 that\'s actually a renamed .wma from a conversion that didn\'t fully work. This check reads just the first few bytes of every song (never the whole file) and reports any mismatches to the debug log. It only reports \u2014 nothing gets changed, removed, or converted.</div>'
@@ -4497,6 +4948,9 @@ function onSettingsClick(e){
     }
     else if(a==='checkformats'){
       checkLibraryFormats();
+    }
+    else if(a==='dupfind'){
+      findDuplicates();
     }
     return;
   }

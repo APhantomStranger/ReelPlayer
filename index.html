@@ -868,6 +868,7 @@
   .dup-badges{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;}
   .dup-badge{font-size:15px;font-weight:700;padding:3px 9px;border-radius:8px;background:var(--surface-3);color:var(--muted);white-space:nowrap;}
   .dup-badge-keep{background:var(--amber-dim);color:var(--amber);}
+  .dup-badge-warn{background:rgba(255,92,122,.15);color:var(--danger);}
   .bulk-check{width:40px;height:40px;border-radius:50%;border:2.5px solid var(--line-2);display:grid;place-items:center;flex:0 0 auto;color:transparent;transition:background .12s,border-color .12s;}
   .bulk-play{width:52px;height:52px;border-radius:50%;flex:0 0 auto;display:grid;place-items:center;color:var(--text);background:var(--surface-2);border:1px solid var(--line-2);}
   .bulk-play:active{background:var(--surface-3);transform:scale(.94);}
@@ -1155,6 +1156,20 @@
   </div>
 </div>
 
+<div class="bulkadd" id="unplayableView">
+  <div class="bulkadd-top">
+    <button class="bulkadd-done" id="unplayableViewDone" aria-label="Back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg><span>Back</span></button>
+    <div class="bulkadd-title">Unplayable songs</div>
+    <div class="bulkadd-count" id="unplayableViewCount"></div>
+  </div>
+  <div class="list-wrap">
+    <div class="dup-scroll" id="unplayableViewList"></div>
+  </div>
+  <div class="dup-bottom">
+    <button class="btn-danger" id="unplayableRemoveBtn" style="width:100%;">Remove selected</button>
+  </div>
+</div>
+
 <!-- Sheets -->
 <div class="scrim" id="scrim"></div>
 
@@ -1218,6 +1233,17 @@
   <div class="field-btns" style="padding:0 24px 24px;">
     <button class="btn-ghost" id="dupConfirmCancel">Cancel</button>
     <button class="btn-danger" id="dupConfirmGo">Remove from device</button>
+  </div>
+</div>
+
+<div class="sheet" id="sheetUnplayableConfirm">
+  <div class="sheet-grab"></div>
+  <div class="sheet-title">Remove unplayable files?</div>
+  <div class="sheet-sub" id="unplayableConfirmSub"></div>
+  <div id="unplayableConfirmBody" style="padding:4px 24px 22px;color:var(--muted);font-size:18px;line-height:1.5;"></div>
+  <div class="field-btns" style="padding:0 24px 24px;">
+    <button class="btn-ghost" id="unplayableConfirmCancel">Cancel</button>
+    <button class="btn-danger" id="unplayableConfirmGo">Remove from device</button>
   </div>
 </div>
 
@@ -1313,10 +1339,21 @@ const state = {
   // ---- duplicate finder ----
   dupGroups: [],           // array of {ids:[...], keeperId} from the last scan
   dupSelected: new Set(),  // ids currently marked for removal in the open dup view
+  // ---- unplayable finder ----
+  unplayableList: [],       // [{id, reason, reasonLabel, canDeleteFromDevice}] from the last scan
+  unplayableSelected: new Set(), // ids currently marked for removal in the open view
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.5.1';
+const APP_VERSION = '3.5.2';
 const CHANGELOG = [
+  { v:'3.5.2', date:'Aug 27, 2026', items:[
+    'New: Settings \u2192 Advanced \u2192 "Remove unplayable songs" scans your entire library and finds every song the browser genuinely can\u2019t decode \u2014 WMA files, corrupted files, partial downloads, files that were renamed to the wrong extension after a failed conversion. Presents the full list up front so you can review exactly what will be removed (with the reason each was flagged) and uncheck anything you want to keep, then permanently deletes the selected files from your device on confirmation.',
+    'Detection is empirical, not heuristic: every song is actually loaded into a hidden audio element and flagged only if the browser\u2019s own decoder rejects it (the same test real playback uses). A file that Chrome would refuse to play with a decoder error IS flagged; a file that plays fine is NOT flagged, even if its extension looks suspicious. Only zero-byte files skip the load test \u2014 nothing to decode anyway.',
+    'The scan uses a separate audio element from the main player, so it doesn\u2019t interrupt music you\u2019re listening to while it runs. Progress is shown in the same toast style as the format-check and duplicate scans.',
+    'Reason labels tell you WHY each file was flagged \u2014 "WMA content", "0 bytes", "Header looks like MP3 but the decoder rejected it (likely corrupt or truncated)", etc. \u2014 so you can spot-check the list before confirming, not just trust a yes/no verdict.',
+    'Files that Reel can\u2019t reach on disk (imported through the file-picker fallback rather than folder access) are shown separately in the review list. The confirmation sheet is explicit about how many will be deleted from the device vs how many can only be unlinked from Reel\u2019s library.',
+    'A single permission prompt covers the whole batch, and a per-file failure never desyncs the library \u2014 same guarantee as the single-song "Delete from device" and the duplicate-removal flow.',
+  ]},
   { v:'3.5.1', date:'Aug 27, 2026', items:[
     'Diagnostic build \u2014 no behavior changes. Adds detailed logging to two intermittent bugs (the occasional garbled/stuttery start when a song auto-advances, and unexpected pauses on bluetooth headphones) so the next time either happens, Settings \u2192 Advanced \u2192 Debug log will have enough information to root-cause it.',
     'Every track transition now records the audio element\u2019s state before AND after the new file is loaded (readyState, networkState, buffered ranges, currentTime, decoder error if any) plus how long the load-to-play step actually took. If auto-advance produces garbled audio, the pattern will show up as a difference between the pre-swap and post-swap state or an unusually long load-to-play delay.',
@@ -2916,6 +2953,155 @@ async function findDuplicates(){
   return {groups:confirmed};
 }
 
+/* ============================================================================
+   UNPLAYABLE SONG FINDER (v3.5.2)
+   Definition: a song is "unplayable" if and only if the browser's own
+   audio decoder refuses to accept it. This is the same test the real
+   player applies during playback, just done proactively across the whole
+   library. We don't flag based on extension or magic bytes as the
+   primary criterion — those are only used AFTER a probe failure to
+   explain WHY the browser rejected the file in a useful way.
+
+   Detection: for each song, load it into a hidden probe audio element
+   with preload='metadata' and wait for either 'loadedmetadata' (decoder
+   accepted it), 'error' (rejected), or an 8-second timeout (something is
+   wrong even if no explicit error fired). The probe is a separate audio
+   element from the main playback one so a scan doesn't interfere with
+   whatever the user is currently listening to.
+
+   Fast paths: only zero-byte files skip the probe — nothing to decode
+   anyway, and a probe against a zero-byte blob URL is a waste of a
+   round-trip. WMA and other suspicious-by-extension files still get
+   probed, so the flag reflects what the browser can actually do rather
+   than what we predict it should do.
+============================================================================ */
+function probePlayability(probe, file){
+  return new Promise(resolve => {
+    const url = URL.createObjectURL(file);
+    let done = false;
+    const finish = (ok, code) => {
+      if(done) return;
+      done = true;
+      probe.removeEventListener('loadedmetadata', onOk);
+      probe.removeEventListener('canplay', onOk);
+      probe.removeEventListener('error', onErr);
+      clearTimeout(timer);
+      try{ probe.removeAttribute('src'); probe.load(); }catch(e){}
+      try{ URL.revokeObjectURL(url); }catch(e){}
+      resolve({ok, errCode: code||0});
+    };
+    const onOk = () => finish(true, 0);
+    const onErr = () => finish(false, probe.error ? probe.error.code : 0);
+    // 8s is generous — real audio metadata loads in well under a second
+    // even on slow storage. If the browser is still stuck after this,
+    // the file is realistically not going to play.
+    const timer = setTimeout(() => finish(false, 0), 8000);
+    probe.addEventListener('loadedmetadata', onOk);
+    probe.addEventListener('canplay', onOk); // belt-and-suspenders — either fires first depending on codec
+    probe.addEventListener('error', onErr);
+    try{
+      probe.src = url;
+      probe.load();
+    }catch(e){ finish(false, 0); }
+  });
+}
+
+/* Explains WHY a probe rejected a file. Only called AFTER the probe has
+   already decided the file is unplayable — the sniff is here to give the
+   user a useful reason label, not to make the yes/no decision. */
+async function describeUnplayable(file, probeResult){
+  try{
+    const sniff = await sniffAudioFormat(file);
+    if(sniff){
+      const family = sniffedFamily(sniff.detected);
+      if(family === 'wma') return 'WMA content \u2014 Chrome can\u2019t decode this format';
+      if(family === 'zero') return 'File is all zero bytes \u2014 empty or never finished writing';
+      if(family === 'unknown') return 'Content doesn\u2019t match any recognized audio format signature';
+      // Header looks valid for its format, but the decoder still rejected
+      // it — most commonly a partial download or a truncated file.
+      return 'Header looks like '+family.toUpperCase()+' but the decoder rejected the file (likely corrupt or truncated)';
+    }
+  }catch(e){}
+  const code = probeResult && probeResult.errCode;
+  if(code === 4) return 'Format not supported by this browser';
+  if(code === 3) return 'Decode error \u2014 unsupported codec or corrupt data';
+  if(code === 2) return 'Network/read error while loading the file';
+  return 'Browser couldn\u2019t decode this file';
+}
+
+async function findUnplayableSongs(){
+  const ids = Array.from(state.library.keys());
+  const total = ids.length;
+  if(total===0){ toastDone('No songs in your library to check', false); return {unplayable:[]}; }
+  toastShow('Testing playback (0 of '+total+')\u2026', true);
+  Log.info('Unplayable-song scan started: '+total+' songs');
+  const unplayable = [];
+  let checked = 0;
+  // Dedicated probe element — a scan in progress must not interrupt or
+  // disturb music the user is currently listening to on the main element.
+  const probe = document.createElement('audio');
+  probe.preload = 'metadata';
+
+  for(const id of ids){
+    checked++;
+    const s = state.library.get(id); if(!s) continue;
+    if(checked % 3 === 0 || checked===total){
+      toastProgress(checked/total, 'Checking '+checked+' of '+total+'\u2026');
+      await new Promise(r=>setTimeout(r, 0)); // yield to keep UI responsive
+    }
+    // Only fast path: zero-byte files. Nothing to decode; probing is pointless.
+    if(s.size === 0){
+      unplayable.push({ id, reasonLabel:'0 bytes \u2014 empty file' });
+      continue;
+    }
+    try{
+      const file = s.file || await fileForSong(s);
+      if(!file){
+        // Couldn't OPEN the file (permission problem, handle gone). This
+        // is NOT the same thing as the browser being unable to decode
+        // it — a scan-time access hiccup must never turn into a false
+        // "unplayable" flag on a file the app would happily play the
+        // moment the underlying permission is granted.
+        Log.warn('Unplayable scan: could not open "'+s.title+'" ('+s.path+') to test \u2014 skipping (not flagged)');
+        continue;
+      }
+      const result = await probePlayability(probe, file);
+      if(!result.ok){
+        const label = await describeUnplayable(file, result);
+        unplayable.push({ id, reasonLabel: label });
+        Log.info('Unplayable: "'+s.title+'" ('+s.path+') \u2014 '+label);
+      }
+    }catch(e){
+      Log.warn('Unplayable scan: probe threw for "'+s.title+'": '+(e&&e.message?e.message:e)+' \u2014 skipping (not flagged)');
+    }
+  }
+  // Release the probe. Empty-src reset + .load() clears the decoder
+  // buffer so this element isn't holding on to anything post-scan.
+  try{ probe.removeAttribute('src'); probe.load(); }catch(e){}
+
+  if(unplayable.length===0){
+    Log.info('Unplayable-song scan complete: '+checked+' checked, all playable');
+    toastDone('All songs can play \u2014 nothing to remove');
+    return {unplayable:[]};
+  }
+  Log.info('Unplayable-song scan complete: '+unplayable.length+' of '+checked+' can\u2019t play');
+  toastDone(pluralize(unplayable.length,'unplayable song')+' found');
+  // Annotate each with whether we can actually reach the file on disk.
+  // Songs imported through the webkitdirectory fallback have no
+  // persistent handle — Reel can remove them from its own library, but
+  // has no way to delete the underlying file. The UI and the removal
+  // path both surface that distinction honestly rather than silently.
+  for(const item of unplayable){
+    const s = state.library.get(item.id);
+    const handle = s ? await resolveHandleForDeletion(s) : null;
+    item.canDeleteFromDevice = !!(handle && typeof handle.remove === 'function');
+  }
+  state.unplayableList = unplayable;
+  state.unplayableSelected = new Set(unplayable.map(x=>x.id));
+  openUnplayableView();
+  return {unplayable};
+}
+
 async function playSong(id){
   const s = state.library.get(id);
   if(!s) return;
@@ -3781,6 +3967,158 @@ function wireDupView(){
 }
 
 /* ============================================================================
+   UNPLAYABLE FINDER — UI
+   Same overlay pattern as the dup view above, but the list is flat (no
+   grouping) and each row carries its own reason badge for WHY that file
+   was flagged, so the review pass shows exactly what will be removed
+   and why before anything actually gets deleted.
+============================================================================ */
+function unplayableRowHTML(item){
+  const s = state.library.get(item.id);
+  if(!s) return '';
+  const checked = state.unplayableSelected.has(item.id);
+  const badges = [];
+  badges.push('<span class="dup-badge dup-badge-warn">'+esc(item.reasonLabel)+'</span>');
+  if(!item.canDeleteFromDevice){
+    badges.push('<span class="dup-badge">Library only \u2014 file wasn\u2019t added via folder access</span>');
+  }
+  return '<div class="row dup-row bulkrow'+(checked?' checked':'')+'" data-id="'+esc(item.id)+'" data-act="unplayabletoggle">'
+    + '<div class="row-main">'
+    + '<div class="row-title">'+esc(s.title)+'</div>'
+    + '<div class="row-sub">'+esc(s.path)+'</div>'
+    + '<div class="row-sub">'+formatBytes(s.size)+'</div>'
+    + '<div class="dup-badges">'+badges.join('')+'</div>'
+    + '</div>'
+    + '<div class="bulk-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>'
+    + '</div>';
+}
+function renderUnplayableView(){
+  // Drop any item whose song was removed since the last render.
+  state.unplayableList = state.unplayableList.filter(it => state.library.has(it.id));
+  $('unplayableViewList').innerHTML = state.unplayableList.map(unplayableRowHTML).join('');
+  updateUnplayableCount();
+  if(state.unplayableList.length===0) closeUnplayableView();
+}
+function updateUnplayableCount(){
+  const n = state.unplayableSelected.size;
+  $('unplayableViewCount').textContent = n>0 ? (n+' selected') : '';
+  const btn = $('unplayableRemoveBtn');
+  btn.disabled = n===0;
+  btn.style.opacity = n===0 ? '.5' : '1';
+}
+function openUnplayableView(){
+  renderUnplayableView();
+  $('unplayableView').classList.add('open');
+}
+function closeUnplayableView(){
+  $('unplayableView').classList.remove('open');
+  state.unplayableList = [];
+  state.unplayableSelected = new Set();
+}
+function toggleUnplayableSelection(id){
+  if(state.unplayableSelected.has(id)) state.unplayableSelected.delete(id);
+  else state.unplayableSelected.add(id);
+  renderUnplayableView();
+}
+async function removeUnplayables(ids){
+  if(!ids || ids.length===0) return {removed:0, failed:0, libraryOnly:0};
+  // Split by whether we can actually reach the file on disk. The two
+  // groups take different removal paths — one deletes the file, the
+  // other only unlinks from the library. Doing them separately keeps
+  // the reporting honest (X deleted from device, Y removed from library
+  // only, Z failed) instead of pretending everything got the same
+  // treatment.
+  const hasHandle = [];
+  const noHandle = [];
+  for(const id of ids){
+    const item = state.unplayableList.find(x=>x.id===id);
+    if(item && item.canDeleteFromDevice) hasHandle.push(id);
+    else noHandle.push(id);
+  }
+  if(hasHandle.length>0){
+    const perm = await ensureFolderWritePermission();
+    if(!perm.granted){
+      Log.warn('Unplayable removal: write permission was not granted. Nothing was removed.');
+      toastDone('Permission needed to delete files \u2014 nothing was removed', false, true);
+      return {removed:0, failed:hasHandle.length, libraryOnly:0};
+    }
+  }
+  toastShow('Removing '+pluralize(ids.length,'unplayable file')+'\u2026', true);
+  let removed = 0, failed = 0, progress = 0;
+  const removedIds = [];
+  for(const id of hasHandle){
+    const result = await deleteSongFileOnly(id);
+    if(result.ok){ removed++; removedIds.push(id); }
+    else{ failed++; }
+    progress++;
+    toastProgress(progress/ids.length, progress+' / '+ids.length);
+  }
+  // Library-only removals: no on-disk work to do, just record and pass
+  // to purgeSongsEverywhere alongside the device-deleted set.
+  let libraryOnly = 0;
+  for(const id of noHandle){
+    const s = state.library.get(id);
+    if(!s) continue;
+    Log.info('Unplayable removal (library only \u2014 no file handle): "'+s.title+'" ('+s.path+')');
+    removedIds.push(id);
+    libraryOnly++;
+    progress++;
+    toastProgress(progress/ids.length, progress+' / '+ids.length);
+  }
+  if(removedIds.length>0){
+    const removedSet = new Set(removedIds);
+    state.unplayableList = state.unplayableList.filter(it => !removedSet.has(it.id));
+    for(const id of removedIds) state.unplayableSelected.delete(id);
+    purgeSongsEverywhere(removedIds);
+  }
+  Log.info('Unplayable removal complete: '+removed+' deleted from device, '+libraryOnly+' removed from library only'+(failed?', '+failed+' failed':''));
+  if(failed===0){
+    let msg = pluralize(removed+libraryOnly, 'unplayable file')+' removed';
+    if(libraryOnly>0 && removed>0) msg = removed+' deleted from device, '+libraryOnly+' removed from library';
+    else if(libraryOnly>0 && removed===0) msg = pluralize(libraryOnly,'file')+' removed from library';
+    toastDone(msg);
+  }else{
+    toastDone(removed+' deleted, '+libraryOnly+' library-only, '+failed+' failed \u2014 see debug log', false, true);
+  }
+  renderUnplayableView();
+  return {removed, failed, libraryOnly};
+}
+function wireUnplayableView(){
+  $('unplayableViewDone').addEventListener('click', closeUnplayableView);
+  $('unplayableViewList').addEventListener('click', e=>{
+    const row = e.target.closest('[data-act="unplayabletoggle"]'); if(!row) return;
+    toggleUnplayableSelection(row.getAttribute('data-id'));
+  });
+  $('unplayableRemoveBtn').addEventListener('click', ()=>{
+    const ids = Array.from(state.unplayableSelected);
+    if(ids.length===0) return;
+    let deviceCount = 0, libOnly = 0;
+    for(const id of ids){
+      const item = state.unplayableList.find(x=>x.id===id);
+      if(item && item.canDeleteFromDevice) deviceCount++;
+      else libOnly++;
+    }
+    $('unplayableConfirmSub').textContent = pluralize(ids.length,'file');
+    let body = '';
+    if(deviceCount>0 && libOnly===0){
+      body = pluralize(deviceCount,'file')+' will be permanently deleted from your device, not just removed from Reel. This can\u2019t be undone.';
+    }else if(deviceCount===0 && libOnly>0){
+      body = pluralize(libOnly,'file')+' will be removed from Reel. The underlying file on disk cannot be reached (this song wasn\u2019t added via folder access), so the file itself will remain until you remove it manually on the phone.';
+    }else{
+      body = deviceCount+' will be permanently deleted from your device. '+libOnly+' will only be removed from Reel \u2014 those weren\u2019t added via folder access, so the file itself will remain on disk. This can\u2019t be undone.';
+    }
+    $('unplayableConfirmBody').textContent = body;
+    openSheet($('sheetUnplayableConfirm'));
+  });
+  $('unplayableConfirmCancel').addEventListener('click', closeSheet);
+  $('unplayableConfirmGo').addEventListener('click', async ()=>{
+    const ids = Array.from(state.unplayableSelected);
+    closeSheet();
+    await removeUnplayables(ids);
+  });
+}
+
+/* ============================================================================
    Playlists CRUD
 ============================================================================ */
 let addTargetId = null;
@@ -4128,6 +4466,7 @@ function wire(){
   wireLogView();
   wireBulkAdd();
   wireDupView();
+  wireUnplayableView();
 }
 
 function importFlow(){
@@ -4914,6 +5253,7 @@ function renderSettings(){
     + '<button class="set-row" data-set="log"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></div><div class="sm"><div class="st">Debug log</div><div class="ss">'+Log.count()+' entries · actions, imports, playback &amp; errors</div></div>'+chev+'</button>'
     + '<button class="set-row" data-set="checkformats"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg></div><div class="sm"><div class="st">Check library for mismatched files</div><div class="ss">Find songs whose actual content doesn\'t match their file extension</div></div>'+chev+'</button>'
     + '<button class="set-row" data-set="dupfind"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></div><div class="sm"><div class="st">Find duplicate songs</div><div class="ss">Match by title and audio content, not just filename</div></div>'+chev+'</button>'
+    + '<button class="set-row" data-set="unplayablefind"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg></div><div class="sm"><div class="st">Remove unplayable songs</div><div class="ss">Test every song and delete the ones the browser can\'t decode</div></div>'+chev+'</button>'
     + '</div>'
     + '<div class="set-note">The log stays on your device and is never sent anywhere. Useful if something isn\'t working right and you want to see exactly what happened.</div>'
     + '<div class="set-note" style="margin-top:10px;">A song can fail to play because it isn\'t really what its file extension claims \u2014 e.g. an .mp3 that\'s actually a renamed .wma from a conversion that didn\'t fully work. This check reads just the first few bytes of every song (never the whole file) and reports any mismatches to the debug log. It only reports \u2014 nothing gets changed, removed, or converted.</div>'
@@ -4951,6 +5291,9 @@ function onSettingsClick(e){
     }
     else if(a==='dupfind'){
       findDuplicates();
+    }
+    else if(a==='unplayablefind'){
+      findUnplayableSongs();
     }
     return;
   }

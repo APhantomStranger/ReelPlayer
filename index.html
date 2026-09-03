@@ -1342,10 +1342,23 @@ const state = {
   // ---- unplayable finder ----
   unplayableList: [],       // [{id, reason, reasonLabel, canDeleteFromDevice}] from the last scan
   unplayableSelected: new Set(), // ids currently marked for removal in the open view
+  // ---- media-change behavior ----
+  stopOnMediaChange: false, // when true, an output-device-change pause is respected instead of auto-resumed
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.5.2';
+const APP_VERSION = '3.5.4';
 const CHANGELOG = [
+  { v:'3.5.4', date:'Aug 27, 2026', items:[
+    'Diagnostic build for the "no lock screen controls" report \u2014 found and fixed a real bug: every part of the lock-screen integration (MediaSession) was wrapped in a catch block that silently swallowed any error with zero logging. If setting up the metadata or artwork ever threw for any reason, NOTHING after that line would run \u2014 including registering the play/pause/skip button handlers \u2014 and there was no way to see it happen. That silent failure is now logged with the actual error message, so if this is the cause, the next debug log will show it plainly.',
+    'Also added: a one-time confirmation logged the first time lock-screen setup actually succeeds (so the log can show a definite "yes, this worked," not just an absence of errors), and a boot-time line confirming whether the MediaSession API is available in your browser context at all.',
+    'This build doesn\u2019t change lock-screen behavior by itself \u2014 the actual controls were already implemented (play/pause/prev/next/seek, artwork, scrubbing position) for both music and audiobook playback. This release makes it possible to see WHY they might not be appearing, rather than guessing.',
+    'Next step: play a song, lock the phone, then check Settings \u2192 Advanced \u2192 Debug log for a "MediaSession API available" line near the top and either a "registered successfully" or a "setup FAILED" line after you hit play \u2014 whichever shows up tells us exactly where this stands.',
+  ]},
+  { v:'3.5.3', date:'Aug 27, 2026', items:[
+    'New: Settings \u2192 Playback \u2192 "Stop on media change". Off by default (existing behavior is unchanged). When turned on, Reel stops trying to resume playback when your bluetooth headphones disconnect or USB audio is unplugged \u2014 it just stays paused, instead of the v3.5.1 retry logic fighting to keep playing and potentially resuming through the phone speaker.',
+    'Mechanism, honestly: Android already pauses media playback on its own when an output device disappears \u2014 the same OS behavior that stops any well-behaved app from suddenly blasting through the speaker. With this setting on, that pause is now respected instead of retried. A secondary listener for the browser\u2019s own device-list-changed event is also wired in as a backup signal, but its reliability specifically for bluetooth output changes varies by Android version and isn\u2019t something this app can guarantee \u2014 the OS-triggered pause is the mechanism actually doing the work in most real cases.',
+    'Every device-change-related pause is logged with the full audio diagnostic, same as any other unintended pause, so this is verifiable from Settings \u2192 Advanced \u2192 Debug log rather than just trusted.',
+  ]},
   { v:'3.5.2', date:'Aug 27, 2026', items:[
     'New: Settings \u2192 Advanced \u2192 "Remove unplayable songs" scans your entire library and finds every song the browser genuinely can\u2019t decode \u2014 WMA files, corrupted files, partial downloads, files that were renamed to the wrong extension after a failed conversion. Presents the full list up front so you can review exactly what will be removed (with the reason each was flagged) and uncheck anything you want to keep, then permanently deletes the selected files from your device on confirmation.',
     'Detection is empirical, not heuristic: every song is actually loaded into a hidden audio element and flagged only if the browser\u2019s own decoder rejects it (the same test real playback uses). A file that Chrome would refuse to play with a decoder error IS flagged; a file that plays fine is NOT flagged, even if its extension looks suspicious. Only zero-byte files skip the load test \u2014 nothing to decode anyway.',
@@ -3133,6 +3146,7 @@ async function playSong(id){
   Log.info('Loading "'+s.title+'" \u00b7 pre-swap '+audioDiag());
   stallLoggedForSrc = false;
   waitLoggedForSrc = false;
+  posStateErrorLoggedForSrc = false;
   currentObjectUrl = URL.createObjectURL(file);
   audio.src = currentObjectUrl;
   state.currentId = id;
@@ -3339,6 +3353,26 @@ audio.addEventListener('pause', ()=>{
   const s = state.library.get(state.currentId);
   const since = lastPlayEventAt ? (Date.now()-lastPlayEventAt)+'ms since play started' : 'no prior play';
   Log.warn('Unintended pause \u2014 "'+(s?s.title:'?')+'" \u00b7 '+audioDiag()+' \u00b7 '+since);
+
+  if(state.stopOnMediaChange){
+    // "Stop on media change" is ON: an unintended pause is very often
+    // exactly this — Android pausing playback itself when a bluetooth
+    // device disconnects or USB is unplugged (the same OS behavior that
+    // stops any well-behaved media app from suddenly blasting through
+    // the phone speaker). Respect it instead of fighting it with a
+    // resume retry. We can't cryptographically prove THIS pause was
+    // caused by a device change rather than, say, a buffer starve, but
+    // the user has explicitly said they'd rather playback just stop
+    // than risk resuming on a different output than the one they meant.
+    Log.info('Stop on media change is on \u2014 leaving playback paused, not attempting to resume');
+    state.playing = false;
+    userWantsPlaying = false;
+    updatePlayButtons();
+    $('player').classList.add('paused');
+    markPlayingRows();
+    return;
+  }
+
   const t0 = Date.now();
   audio.play().then(()=>{
     Log.info('Immediate resume succeeded ('+(Date.now()-t0)+'ms)');
@@ -3348,6 +3382,31 @@ audio.addEventListener('pause', ()=>{
     scheduleResumeRetries('after unintended pause');
   });
 });
+
+/* Secondary signal for "Stop on media change": navigator.mediaDevices
+   fires 'devicechange' when the set of audio devices changes (a
+   bluetooth headset connecting/disconnecting, USB audio arriving or
+   going away). This is best-effort — on Android Chrome its reliability
+   for BLUETOOTH-specific output changes varies by device/OS version, so
+   the primary mechanism for this feature is actually the "unintended
+   pause" branch above: Android already pauses media playback itself
+   when an output device disappears (the same behavior that stops any
+   well-behaved app from suddenly playing through the phone speaker),
+   which surfaces as exactly that pause event. This listener catches the
+   rarer case where the device list changes without the OS pausing
+   anything on its own. Guarded on !audio.paused so it never calls
+   requestPause() on an already-paused element — doing so would still
+   set intentionalPause=true with no corresponding real pause event to
+   consume it, corrupting the flag for a later, unrelated pause. */
+if(navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener==='function'){
+  navigator.mediaDevices.addEventListener('devicechange', ()=>{
+    Log.info('Audio device list changed \u00b7 '+audioDiag());
+    if(state.stopOnMediaChange && !audio.paused){
+      Log.info('Stop on media change is on \u2014 pausing due to device change');
+      requestPause();
+    }
+  });
+}
 audio.addEventListener('timeupdate', updateProgress);
 audio.addEventListener('loadedmetadata', ()=>{
   if(state.mode==='book'){ onBookMetadata(); return; }
@@ -3390,6 +3449,7 @@ function audioDiag(){
    over and over. These reset in playSong when a new track loads. */
 let stallLoggedForSrc = false;
 let waitLoggedForSrc = false;
+let posStateErrorLoggedForSrc = false;
 /* Wall-clock timestamp of the last successful 'play' event, so a later
    unintended pause can be reported with "12500ms since play started" —
    useful for spotting whether pauses cluster right after a track starts
@@ -3434,7 +3494,13 @@ function updateProgress(){
   if(d && !$('durTime').textContent.match(/\d/)) $('durTime').textContent = fmtTime(d);
   $('miniProg').style.width = pct+'%';
   if('mediaSession' in navigator && d){
-    try{ navigator.mediaSession.setPositionState({duration:d, position:c, playbackRate:audio.playbackRate||1}); }catch(e){}
+    try{ navigator.mediaSession.setPositionState({duration:d, position:c, playbackRate:audio.playbackRate||1}); }
+    catch(e){
+      if(!posStateErrorLoggedForSrc){
+        posStateErrorLoggedForSrc = true;
+        Log.warn('MediaSession: setPositionState failed (further failures on this track will not re-log): '+(e&&e.message?e.message:e));
+      }
+    }
   }
 }
 function updatePlayButtons(){
@@ -3444,7 +3510,7 @@ function updatePlayButtons(){
   $('playIcon').innerHTML = '<path d="'+(playing?pausePath:playPath)+'"/>';
   $('miniPlayIcon').innerHTML = '<path d="'+(playing?pausePath:playPath)+'"/>';
   const bpi = $('bpPlayIcon'); if(bpi) bpi.innerHTML = '<path d="'+(playing?pausePath:playPath)+'"/>';
-  if('mediaSession' in navigator){ try{ navigator.mediaSession.playbackState = playing?'playing':'paused'; }catch(e){} }
+  if('mediaSession' in navigator){ try{ navigator.mediaSession.playbackState = playing?'playing':'paused'; }catch(e){ Log.warn('MediaSession: setting playbackState failed: '+(e&&e.message?e.message:e)); } }
 }
 function markPlayingRows(){
   if(songsVList) songsVList.refresh();
@@ -3479,6 +3545,10 @@ async function setNowArt(id){
     pa.innerHTML=note; ma.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>'; bg.innerHTML='';
   }
 }
+/* Logged once, the first time MediaSession setup actually succeeds — so
+   the debug log can show a definite "yes this worked" rather than just
+   the absence of an error (which could also mean it was never reached). */
+let mediaSessionConfirmedOnce = false;
 function updateMediaSession(s){
   if(!('mediaSession' in navigator)) return;
   try{
@@ -3491,7 +3561,21 @@ function updateMediaSession(s){
     navigator.mediaSession.setActionHandler('previoustrack', ()=>prevTrack());
     navigator.mediaSession.setActionHandler('nexttrack', ()=>nextTrack(false));
     navigator.mediaSession.setActionHandler('seekto', (d)=>{ if(d.seekTime!=null) audio.currentTime=d.seekTime; });
-  }catch(e){}
+    if(!mediaSessionConfirmedOnce){
+      mediaSessionConfirmedOnce = true;
+      Log.info('MediaSession: metadata + action handlers registered successfully (lock screen controls should be available)');
+    }
+  }catch(e){
+    // This used to be a silent catch — if metadata construction or any
+    // handler registration throws, EVERYTHING after the throw point never
+    // runs, including handlers that appear earlier in this same try block
+    // only if the throw happens before them; a throw from
+    // `new MediaMetadata(meta)` specifically means NONE of the action
+    // handlers below it get registered at all, which would produce
+    // exactly "no lock screen controls whatsoever" with zero prior
+    // visibility into why. Now it's logged instead of eaten.
+    Log.error('MediaSession setup FAILED for "'+s.title+'": '+(e&&e.message?e.message:e)+' \u2014 lock screen controls will not work until this succeeds');
+  }
 }
 
 /* ============================================================================
@@ -4161,7 +4245,7 @@ function persistPrefs(){
   prefsTimer = setTimeout(()=>{
     DB.set('prefs', {sort:state.sort, volume:state.volume, shuffle:state.shuffle, repeat:state.repeat, view:state.view,
       accent:state.accent, speed:state.speed, bookSpeed:state.bookSpeed, eqEnabled:state.eqEnabled, eqGains:state.eqGains,
-      favorites:state.favorites, recent:state.recent}).catch(()=>{});
+      favorites:state.favorites, recent:state.recent, stopOnMediaChange:state.stopOnMediaChange}).catch(()=>{});
   }, 250);
 }
 function persistPlaylists(){
@@ -4891,6 +4975,7 @@ function setCapabilityNote(){
 async function boot(){
   await Log.load();
   Log.info('Reel v'+APP_VERSION+' booting — '+navigator.userAgent);
+  Log.info('MediaSession API available: '+('mediaSession' in navigator)+' (lock screen controls need this to be true)');
   wire();
   setCapabilityNote();
   // load prefs
@@ -4912,6 +4997,7 @@ async function boot(){
       if(typeof prefs.bookSpeed==='number') state.bookSpeed = prefs.bookSpeed;
       if(typeof prefs.eqEnabled==='boolean') state.eqEnabled = prefs.eqEnabled;
       if(Array.isArray(prefs.eqGains) && prefs.eqGains.length===6) state.eqGains = prefs.eqGains.slice();
+      if(typeof prefs.stopOnMediaChange==='boolean') state.stopOnMediaChange = prefs.stopOnMediaChange;
       if(Array.isArray(prefs.favorites)) state.favorites = prefs.favorites.slice();
       if(Array.isArray(prefs.recent)) state.recent = prefs.recent.slice();
     }
@@ -5189,6 +5275,11 @@ function setEQEnabled(on){
   if(on){ if(!ensureEQ()){ state.eqEnabled=false; toastDone('Equaliser isn’t supported here', false, true); } }
   applyEQ(); persistPrefs();
 }
+function setStopOnMediaChange(on){
+  state.stopOnMediaChange = on;
+  Log.info('Stop on media change: '+(on?'enabled':'disabled'));
+  persistPrefs();
+}
 function setEQPreset(name){
   const p = EQ_PRESETS[name]; if(!p) return;
   state.eqGains = p.slice();
@@ -5226,6 +5317,9 @@ function renderSettings(){
     + '<div class="opts">'+sleepOpts.map(([v,l])=>'<button class="opt'+(state.sleepMin===v?' sel':'')+'" data-sleep="'+v+'">'+l+'</button>').join('')+'</div></div>'
     + '<div class="set-row" style="display:block;"><div class="st">Playback speed</div>'
     + '<div class="opts">'+speedOpts.map(([v,l])=>'<button class="opt'+(state.speed===v?' sel':'')+'" data-speed="'+v+'">'+l+'</button>').join('')+'</div></div>'
+    + '<button class="set-row" data-toggle="stopmedia"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="M22 9.5v5L16 12z"/><line x1="1" y1="1" x2="23" y2="23"/></svg></div>'
+    + '<div class="sm"><div class="st">Stop on media change</div><div class="ss">Pause instead of trying to resume when Bluetooth disconnects or USB is unplugged</div></div>'
+    + '<div class="tgl'+(state.stopOnMediaChange?' on':'')+'"><span></span></div></button>'
     + '</div></div>';
   // Equaliser
   html += '<div class="set-group"><h3>Equaliser</h3><div class="set-card">'
@@ -5273,6 +5367,8 @@ function onSettingsClick(e){
   if(sp){ setSpeed(parseFloat(sp.getAttribute('data-speed'))); renderSettings(); return; }
   const tg = e.target.closest('[data-toggle="eq"]');
   if(tg){ setEQEnabled(!state.eqEnabled); renderSettings(); return; }
+  const tsm = e.target.closest('[data-toggle="stopmedia"]');
+  if(tsm){ setStopOnMediaChange(!state.stopOnMediaChange); renderSettings(); return; }
   const ep = e.target.closest('[data-eqpreset]');
   if(ep){ setEQPreset(ep.getAttribute('data-eqpreset')); renderSettings(); return; }
   const st = e.target.closest('[data-set]');
@@ -5870,7 +5966,13 @@ function updateBookMediaSession(){
     try{ navigator.mediaSession.setActionHandler('seekbackward', ()=>bookSkip(-30)); }catch(e){}
     try{ navigator.mediaSession.setActionHandler('seekforward', ()=>bookSkip(30)); }catch(e){}
     navigator.mediaSession.setActionHandler('seekto', (d)=>{ if(d.seekTime!=null){ audio.currentTime=d.seekTime; saveBookProgress(true);} });
-  }catch(e){}
+    if(!mediaSessionConfirmedOnce){
+      mediaSessionConfirmedOnce = true;
+      Log.info('MediaSession: metadata + action handlers registered successfully (lock screen controls should be available)');
+    }
+  }catch(e){
+    Log.error('MediaSession setup FAILED for audiobook "'+b.title+'": '+(e&&e.message?e.message:e)+' \u2014 lock screen controls will not work until this succeeds');
+  }
 }
 
 /* ---- book player screen ---- */

@@ -832,6 +832,8 @@
   .log-line .lm{flex:1;min-width:0;word-break:break-word;color:var(--text);}
   .log-line.warn .lm{color:var(--amber);}
   .log-line.error .lm{color:var(--danger);}
+  .log-date-sep{padding:16px 20px 6px;font-size:15px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted-2);}
+  .log-session-sep{margin:4px 20px 8px;padding:6px 0;font-size:15px;font-weight:600;color:var(--amber);text-align:center;border-top:1px dashed var(--line-2);border-bottom:1px dashed var(--line-2);}
   .log-empty{padding:60px 30px;text-align:center;color:var(--muted);font-size:20px;line-height:1.6;}
 
   /* ================= Bulk add songs to playlist ================= */
@@ -1346,8 +1348,19 @@ const state = {
   stopOnMediaChange: false, // when true, an output-device-change pause is respected instead of auto-resumed
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.5.4';
+const APP_VERSION = '3.5.6';
 const CHANGELOG = [
+  { v:'3.5.6', date:'Aug 28, 2026', items:[
+    'Debug log capacity raised from 600 to 800 entries.',
+    'Every log line in the saved/copied log now shows the full date (not just time-of-day), so a log that spans multiple days \u2014 much more likely now that it holds more history \u2014 is never ambiguous about which day something happened.',
+    'Every line also now shows how long it had been since the previous line, e.g. "(+22ms)" or "(+1.6s)" or "(+14.2h)" \u2014 the exact kind of by-hand timestamp subtraction that was needed to trace the v3.5.5 auto-advance race is now right there in the log itself.',
+    'A clear "SESSION START" divider is inserted wherever the app was restarted, so a long log is easy to scan for where one run ends and the next begins. The in-app Debug log screen shows the same thing as a date header and an "App started" marker, plus now displays millisecond precision instead of only whole seconds.',
+    'The audio diagnostic snapshot attached to every playback-related log line (pauses, stalls, track transitions, etc.) now spells out what the readyState and networkState codes actually mean inline \u2014 e.g. "ready=4(HAVE_ENOUGH_DATA)" instead of just "ready=4" \u2014 and adds whether the screen/app was in the foreground or background at that exact moment (vis=visible/hidden), which is exactly the context needed to tell a genuine background/bluetooth issue apart from something that happened while actively looking at the app.',
+  ]},
+  { v:'3.5.5', date:'Aug 28, 2026', items:[
+    'Found and fixed the garbled/stuttery auto-advance bug, confirmed from a real device debug log. Browsers fire \u2018pause\u2019 immediately before \u2018ended\u2019 when a track finishes naturally \u2014 the pause handler didn\u2019t know the difference, so it treated the natural end as an "unintended pause" and issued a stray resume attempt on the track that had just finished. That stray resume raced against the real track-advance, which was reassigning the player to the next song at almost the same instant \u2014 occasionally landing badly enough to produce a garbled or stuttery start. The pause handler now checks whether the track had actually ended before reacting, so this race can\u2019t happen. Every other pause path (bluetooth drops, buffer stalls, intentional pauses, "Stop on media change") is unaffected \u2014 this only skips the one specific case that was never a real problem to begin with.',
+    'The bluetooth-pause reports in that same log turned out to be genuine \u2014 real audio-focus drops with a healthy buffer at the time, not a bug in Reel. They were already recovering on their own (from a few milliseconds up to about 1.6 seconds). Nothing changed there; "Stop on media change" (v3.5.3) remains the right setting if you\u2019d rather it not keep retrying.',
+  ]},
   { v:'3.5.4', date:'Aug 27, 2026', items:[
     'Diagnostic build for the "no lock screen controls" report \u2014 found and fixed a real bug: every part of the lock-screen integration (MediaSession) was wrapped in a catch block that silently swallowed any error with zero logging. If setting up the metadata or artwork ever threw for any reason, NOTHING after that line would run \u2014 including registering the play/pause/skip button handlers \u2014 and there was no way to see it happen. That silent failure is now logged with the actual error message, so if this is the cause, the next debug log will show it plainly.',
     'Also added: a one-time confirmation logged the first time lock-screen setup actually succeeds (so the log can show a definite "yes, this worked," not just an absence of errors), and a boot-time line confirming whether the MediaSession API is available in your browser context at all.',
@@ -1636,8 +1649,17 @@ const DB = (() => {
         window 'error' and 'unhandledrejection' listener for anything that
         slips through uncaught.
 ============================================================================ */
+/* Formats a millisecond gap between two log entries in the most readable
+   unit — used by Log.text() so a debug-log excerpt shows timing at a
+   glance instead of requiring someone to subtract timestamps by hand. */
+function formatLogDelta(ms){
+  if(ms<1000) return '+'+ms+'ms';
+  if(ms<60000) return '+'+(ms/1000).toFixed(1)+'s';
+  if(ms<3600000) return '+'+(ms/60000).toFixed(1)+'m';
+  return '+'+(ms/3600000).toFixed(1)+'h';
+}
 const Log = (()=>{
-  const MAX = 600;
+  const MAX = 800;
   let buf = [];
   let saveTimer = null;
   function push(level, msg){
@@ -1655,11 +1677,26 @@ const Log = (()=>{
     clear:()=>{ buf=[]; DB.set('debugLog', []).catch(()=>{}); },
     entries:()=>buf.slice(),
     count:()=>buf.length,
-    text:()=>buf.map(e=>{
-      const d = new Date(e.t);
-      const ts = d.toTimeString().slice(0,8)+'.'+String(d.getMilliseconds()).padStart(3,'0');
-      return '['+ts+'] '+e.level.toUpperCase().padEnd(5)+' '+e.msg;
-    }).join('\n'),
+    text:()=>{
+      const lines = [];
+      let prevT = null;
+      for(const e of buf){
+        const d = new Date(e.t);
+        const dateStr = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+        const ts = dateStr+' '+d.toTimeString().slice(0,8)+'.'+String(d.getMilliseconds()).padStart(3,'0');
+        // A boot line always starts a fresh app session — insert a clear
+        // separator so a long, multi-day log (much more likely now that
+        // the buffer holds 800 entries) is easy to scan by eye for where
+        // one run of the app ends and the next begins.
+        if(/^Reel v[\d.]+ booting/.test(e.msg) && lines.length>0){
+          lines.push('----------------------- SESSION START -----------------------');
+        }
+        const delta = prevT!=null ? '  ('+formatLogDelta(e.t-prevT)+')' : '';
+        lines.push('['+ts+'] '+e.level.toUpperCase().padEnd(5)+' '+e.msg+delta);
+        prevT = e.t;
+      }
+      return lines.join('\n');
+    },
     async load(){
       try{ const saved = await DB.get('debugLog'); if(Array.isArray(saved)) buf = saved.slice(-MAX); }catch(e){}
     },
@@ -3345,6 +3382,20 @@ audio.addEventListener('pause', ()=>{
     markPlayingRows();
     return;
   }
+  if(audio.ended){
+    // Root cause found from a real device log (v3.5.5): browsers fire
+    // 'pause' immediately before 'ended' when a track finishes naturally
+    // — this is NOT an unintended pause, it's the normal precursor to
+    // the 'ended' event. Treating it as unintended used to call
+    // audio.play() here to "resume" the track that just finished, which
+    // raced against the 'ended' handler's own nextTrack() reassigning
+    // audio.src to the NEXT track a few milliseconds later. That stray
+    // resume's play() promise could resolve after the src had already
+    // been swapped out from under it — a real, confirmed source of the
+    // garbled/stuttery auto-advance reports. The 'ended' listener below
+    // handles the actual track advance; nothing to do here.
+    return;
+  }
   // Nothing in Reel asked for this pause — capture full state so a real
   // debug-log excerpt from a device can distinguish the actual causes
   // (bluetooth drop = readyState=0/networkState=3; buffer starve =
@@ -3420,10 +3471,18 @@ audio.addEventListener('loadedmetadata', ()=>{
   }
 });
 const MEDIA_ERROR_NAMES = {1:'aborted',2:'network error',3:'decode error (unsupported codec)',4:'format not supported by this browser'};
+const READY_STATE_NAMES = {0:'HAVE_NOTHING',1:'HAVE_METADATA',2:'HAVE_CURRENT_DATA',3:'HAVE_FUTURE_DATA',4:'HAVE_ENOUGH_DATA'};
+const NETWORK_STATE_NAMES = {0:'NETWORK_EMPTY',1:'NETWORK_IDLE',2:'NETWORK_LOADING',3:'NETWORK_NO_SOURCE'};
 /* Compact audio-element diagnostic string, used everywhere the log
    captures "what was the audio element actually doing when X happened".
-   readyState: 0=NOTHING 1=METADATA 2=CURRENT_DATA 3=FUTURE_DATA 4=ENOUGH.
-   networkState: 0=EMPTY 1=IDLE 2=LOADING 3=NO_SOURCE.
+   readyState/networkState carry their spec names inline now, not just
+   the numeric code, so a log excerpt is self-explanatory without needing
+   the code comment that used to live here to decode it.
+   vis=document.visibilityState is included because "was the phone locked
+   / screen off at that moment" is exactly the distinction that separates
+   a genuine bluetooth/background-audio issue from something that
+   happened while actively looking at the app — previously that context
+   only existed by cross-referencing wall-clock time against memory.
    buffered.length + first buffered range is often the smoking gun for
    Bluetooth-triggered pauses (0 buffered ranges = decoder just starved). */
 function audioDiag(){
@@ -3439,8 +3498,11 @@ function audioDiag(){
       }
     }catch(e){}
     const err = audio.error ? (audio.error.code+':'+(MEDIA_ERROR_NAMES[audio.error.code]||'unknown')) : 'none';
-    return 'ready='+audio.readyState+' net='+audio.networkState
-      +' paused='+audio.paused+' ended='+audio.ended
+    let vis = 'n/a';
+    try{ vis = document.visibilityState; }catch(e){}
+    return 'ready='+audio.readyState+'('+(READY_STATE_NAMES[audio.readyState]||'?')+')'
+      +' net='+audio.networkState+'('+(NETWORK_STATE_NAMES[audio.networkState]||'?')+')'
+      +' paused='+audio.paused+' ended='+audio.ended+' vis='+vis
       +' t='+t+'/'+dStr+' buf='+buf+' err='+err;
   }catch(e){ return 'diag-failed:'+(e&&e.message?e.message:e); }
 }
@@ -5449,10 +5511,19 @@ function renderLogView(){
   }
   // newest first — most useful for "what just happened" debugging
   let html='';
+  let prevDateStr = null; // date of the line already rendered above (more recent), since we walk newest -> oldest
   for(let i=entries.length-1;i>=0;i--){
     const e = entries[i];
     const d = new Date(e.t);
-    const ts = d.toTimeString().slice(0,8);
+    const dateStr = d.toDateString();
+    if(dateStr !== prevDateStr){
+      html += '<div class="log-date-sep">'+esc(dateStr)+'</div>';
+      prevDateStr = dateStr;
+    }
+    if(/^Reel v[\d.]+ booting/.test(e.msg)){
+      html += '<div class="log-session-sep">App started</div>';
+    }
+    const ts = d.toTimeString().slice(0,8)+'.'+String(d.getMilliseconds()).padStart(3,'0');
     html += '<div class="log-line '+esc(e.level)+'"><span class="lt">'+ts+'</span><span class="lm">'+esc(e.msg)+'</span></div>';
   }
   $('logScroll').innerHTML = html;

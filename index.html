@@ -1348,8 +1348,12 @@ const state = {
   stopOnMediaChange: false, // when true, an output-device-change pause is respected instead of auto-resumed
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.5.7';
+const APP_VERSION = '3.5.8';
 const CHANGELOG = [
+  { v:'3.5.8', date:'Sep 4, 2026', items:[
+    'Found and fixed the intermittent garbled/stuttery track-start bug (separate from the v3.5.5 fix). Every time a track started, if its artwork wasn\u2019t already cached this session, Reel would immediately re-open the SAME file the decoder was actively reading and pull up to 96KB \u2014 sometimes up to ~3MB for a large embedded cover \u2014 from the very start of it, at the exact moment the decoder was most sensitive to interruption. Two reads of the same file competing right at playback start is a textbook cause of exactly this symptom, and it explains why it was intermittent (only happened the first time a song\u2019s art was needed this session) and why skipping or restarting "fixed" it (the competing read had already finished and been cached by the second attempt).',
+    'Artwork that\u2019s already resolved (found or confirmed absent) still shows immediately, with no change. Artwork that isn\u2019t resolved yet is now loaded half a second after playback starts instead of in the same instant \u2014 by then the decoder\u2019s own critical initial read has already completed, so the two no longer compete. The only visible difference is that unresolved album art may appear a beat after the title now, rather than at the exact same moment.',
+  ]},
   { v:'3.5.7', date:'Sep 4, 2026', items:[
     'Fixed "Stop on media change" leaving playback stuck paused after brief bluetooth hiccups right as a track starts, confirmed from a real device log. Several pauses were landing well under a second after playback actually began (331ms, 642ms, 714ms) \u2014 a different signature than a genuine mid-listening disconnect, more consistent with a quick bluetooth route-renegotiation blip at the start of a new playback session. A pause within 2 seconds of playback starting is now treated as a startup hiccup and retried anyway, even with the setting on \u2014 a device that was successfully playing audio a moment ago hasn\u2019t really "changed". If it turns out to be a genuine disconnect, the resume attempt simply fails and falls back to the normal retry-then-give-up behavior, same as always. Pauses landing further into a track are still fully respected exactly as before.',
   ]},
@@ -3616,8 +3620,45 @@ function updateNowPlaying(){
   $('playerAlbum').textContent = (s.album && s.album!=='Unknown Album') ? s.album : '';
   $('durTime').textContent = s.duration? fmtTime(s.duration) : '0:00';
   updateFavBtn();
-  // art
-  setNowArt(s.id);
+  // art — deferred; see scheduleNowArt for why
+  scheduleNowArt(s.id);
+}
+/* How long to wait, after a track starts playing, before loading its
+   artwork — only matters when the art isn't cached yet (see below).
+   Chosen with margin: "load-to-play" in real device logs is almost
+   always under 400ms even on a slow start, and by the time
+   updateNowPlaying() runs the decoder has ALREADY reported enough
+   buffered data to play (that's what "Playing" logging means) — this
+   delay protects the browser's ongoing progressive buffering just after
+   that point, not the initial fill itself. */
+const ART_LOAD_DELAY_MS = 500;
+let nowArtTimer = null;
+/* Confirmed root cause (v3.5.8) of the intermittent garbled/stuttery
+   track-start reports: getArtUrl() below — when a song's art isn't
+   cached yet — re-opens the SAME file the decoder is actively reading
+   for playback and reads up to 96KB (sometimes up to ~3MB, for a large
+   embedded cover) starting from byte 0, the exact region the decoder
+   itself needs first. Doing that in the same instant playback starts
+   pits two reads of the same file against each other right when the
+   decoder is most sensitive. This only ever happens for a song whose
+   art hasn't been resolved yet THIS session — once cached (success or
+   negative), getArtUrl never touches the file again — which is exactly
+   why the bug was intermittent (only first-time-this-session plays) and
+   why skipping or restarting "fixed" it (the competing read had already
+   finished and been cached by the second attempt).
+   Fix: don't race it. If art is already resolved, show it immediately —
+   that costs nothing. If not, wait a beat so the decoder's own read has
+   room to breathe, and only then fetch it. */
+function scheduleNowArt(id){
+  clearTimeout(nowArtTimer);
+  if(artUrlCache.has(id) || artNegative.has(id)){
+    setNowArt(id);
+    return;
+  }
+  nowArtTimer = setTimeout(()=>{
+    if(state.currentId !== id) return; // track changed again before this fired — skip, don't show stale art
+    setNowArt(id);
+  }, ART_LOAD_DELAY_MS);
 }
 async function setNowArt(id){
   const url = await getArtUrl(id);

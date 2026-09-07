@@ -1348,8 +1348,12 @@ const state = {
   stopOnMediaChange: false, // when true, an output-device-change pause is respected instead of auto-resumed
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.5.8';
+const APP_VERSION = '3.5.9';
 const CHANGELOG = [
+  { v:'3.5.9', date:'Sep 7, 2026', items:[
+    'Fixed "Stop on media change" being silently overridden when reopening the app. There\u2019s a separate safety-net path (onAppForeground) that runs whenever the app comes back into view, meant to recover playback after a real bluetooth hiccup \u2014 but it never checked the setting at all, so a pause it was supposed to respect would quietly start playing again the instant the app was reopened, with no button press. It now checks the same setting (with the same brief startup-hiccup exception used by the pause handler itself) before attempting to resume anything.',
+    'This also explains reports of a pause with nothing about it in the debug log: a backgrounded browser tab can stop running JavaScript entirely until it\u2019s foregrounded again, so the original pause sometimes never got a chance to log. Reopening the app now always logs an "App foreground" line (with the full audio diagnostic) whenever there was an active listening session to consider, whichever way the decision goes \u2014 so this class of issue is visible going forward even when the pause that triggered it wasn\u2019t.',
+  ]},
   { v:'3.5.8', date:'Sep 4, 2026', items:[
     'Found and fixed the intermittent garbled/stuttery track-start bug (separate from the v3.5.5 fix). Every time a track started, if its artwork wasn\u2019t already cached this session, Reel would immediately re-open the SAME file the decoder was actively reading and pull up to 96KB \u2014 sometimes up to ~3MB for a large embedded cover \u2014 from the very start of it, at the exact moment the decoder was most sensitive to interruption. Two reads of the same file competing right at playback start is a textbook cause of exactly this symptom, and it explains why it was intermittent (only happened the first time a song\u2019s art was needed this session) and why skipping or restarting "fixed" it (the competing read had already finished and been cached by the second attempt).',
     'Artwork that\u2019s already resolved (found or confirmed absent) still shows immediately, with no change. Artwork that isn\u2019t resolved yet is now loaded half a second after playback starts instead of in the same instant \u2014 by then the decoder\u2019s own critical initial read has already completed, so the two no longer compete. The only visible difference is that unresolved album art may appear a beat after the title now, rather than at the exact same moment.',
@@ -5229,10 +5233,29 @@ function onAppForeground(){
   // same shared retry sequence as the native 'pause' handler above — see
   // scheduleResumeRetries for why gating on userWantsPlaying (not
   // state.playing) matters here.
-  if(userWantsPlaying && audio.paused && audio.src && !intentionalPause){
-    audio.play().catch(()=>{});
+  //
+  // Confirmed from a real report (v3.5.9): this used to auto-resume
+  // completely unconditionally, ignoring "Stop on media change" entirely
+  // — a pause that happened while the app was backgrounded (sometimes
+  // invisible in the log altogether, since a backgrounded/frozen tab can
+  // stop running JS until it's foregrounded again, so the original pause
+  // event never gets a chance to log) would silently start playing again
+  // the instant the app was reopened, with no button press — exactly the
+  // outcome the setting exists to prevent. Applies the same
+  // startup-grace-period reasoning as the pause handler: if the track
+  // had JUST started (a coincidental hiccup rather than a real change),
+  // still retry; if it's been running a while, respect the stop.
+  const msSincePlay = lastPlayEventAt ? (Date.now()-lastPlayEventAt) : Infinity;
+  const respecting = state.stopOnMediaChange && msSincePlay >= MEDIA_CHANGE_GRACE_MS;
+  if(userWantsPlaying){
+    Log.info('App foreground \u00b7 '+audioDiag()+(respecting ? ' \u2014 stop on media change is on, not auto-resuming' : ' \u2014 checking whether to resume'));
   }
-  scheduleResumeRetries('app foreground');
+  if(!respecting){
+    if(userWantsPlaying && audio.paused && audio.src && !intentionalPause){
+      audio.play().catch(()=>{});
+    }
+    scheduleResumeRetries('app foreground');
+  }
 
   // Never trigger a folder rescan while the user wants a song playing.
   // Walking the whole folder tree and re-reading every file is heavy work;

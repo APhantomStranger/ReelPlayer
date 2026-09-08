@@ -1348,8 +1348,13 @@ const state = {
   stopOnMediaChange: false, // when true, an output-device-change pause is respected instead of auto-resumed
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.5.9';
+const APP_VERSION = '3.5.10';
 const CHANGELOG = [
+  { v:'3.5.10', date:'Sep 7, 2026', items:[
+    'Found and fixed the real cause of a "garbled, stuttery audio" report that turned out not to be audio corruption at all: with "Stop on media change" on, a real device log showed one song racking up roughly 190 separate pause/resume cycles in under 20 seconds \u2014 the app was genuinely, repeatedly stopping and restarting playback that fast, which is exactly what that sounds like. Root cause was in the v3.5.7 "startup hiccup" exception: it measured time since the most recent successful resume, which resets every time a retry succeeds \u2014 so as long as pauses kept recurring faster than the 2-second window, that window never actually expired, and a genuinely flapping bluetooth connection got fought forever instead of ever being backed off from.',
+    'Fixed with two independent limits, so it can\u2019t happen either way: the grace period is now anchored to when the current track actually started (unaffected by how many times it\u2019s been resumed since), AND a hard cap of 5 retries per track, so even a connection flapping faster than 2 seconds gets cut loose quickly rather than retried at whatever rate it happens to be failing. Both the pause handler and the "reopening the app" safety net (v3.5.9) now share the exact same check, so this can\u2019t drift out of sync between the two again.',
+    'A single coincidental hiccup right at track start is completely unaffected \u2014 still retried automatically, same as before. This only changes what happens when pausing keeps recurring rapidly.',
+  ]},
   { v:'3.5.9', date:'Sep 7, 2026', items:[
     'Fixed "Stop on media change" being silently overridden when reopening the app. There\u2019s a separate safety-net path (onAppForeground) that runs whenever the app comes back into view, meant to recover playback after a real bluetooth hiccup \u2014 but it never checked the setting at all, so a pause it was supposed to respect would quietly start playing again the instant the app was reopened, with no button press. It now checks the same setting (with the same brief startup-hiccup exception used by the pause handler itself) before attempting to resume anything.',
     'This also explains reports of a pause with nothing about it in the debug log: a backgrounded browser tab can stop running JavaScript entirely until it\u2019s foregrounded again, so the original pause sometimes never got a chance to log. Reopening the app now always logs an "App foreground" line (with the full audio diagnostic) whenever there was an active listening session to consider, whichever way the decision goes \u2014 so this class of issue is visible going forward even when the pause that triggered it wasn\u2019t.',
@@ -3195,6 +3200,8 @@ async function playSong(id){
   stallLoggedForSrc = false;
   waitLoggedForSrc = false;
   posStateErrorLoggedForSrc = false;
+  currentTrackStartedAt = Date.now();
+  hiccupRetryCountForTrack = 0;
   currentObjectUrl = URL.createObjectURL(file);
   audio.src = currentObjectUrl;
   state.currentId = id;
@@ -3417,14 +3424,16 @@ audio.addEventListener('pause', ()=>{
   const since = lastPlayEventAt ? msSincePlay+'ms since play started' : 'no prior play';
   Log.warn('Unintended pause \u2014 "'+(s?s.title:'?')+'" \u00b7 '+audioDiag()+' \u00b7 '+since);
 
-  if(state.stopOnMediaChange && msSincePlay >= MEDIA_CHANGE_GRACE_MS){
-    // "Stop on media change" is ON, and this pause happened well after
-    // the track actually started: very often exactly this — Android
+  if(state.stopOnMediaChange && !withinMediaChangeGracePeriod()){
+    // "Stop on media change" is ON, and this is no longer within the
+    // brief startup grace period (by elapsed time OR retry count — see
+    // withinMediaChangeGracePeriod): very often exactly this — Android
     // pausing playback itself when a bluetooth device disconnects or USB
     // is unplugged (the same OS behavior that stops any well-behaved
     // media app from suddenly blasting through the phone speaker).
     // Respect it instead of fighting it with a resume retry.
-    Log.info('Stop on media change is on \u2014 leaving playback paused, not attempting to resume');
+    const capped = hiccupRetryCountForTrack >= MAX_HICCUP_RETRIES_PER_TRACK;
+    Log.info('Stop on media change is on ('+(capped ? 'retried '+hiccupRetryCountForTrack+' times already' : 'past the startup window')+') \u2014 leaving playback paused, not attempting to resume');
     state.playing = false;
     userWantsPlaying = false;
     updatePlayButtons();
@@ -3445,7 +3454,8 @@ audio.addEventListener('pause', ()=>{
     // Retry through it like the setting were off; a genuine device
     // change will simply fail the resume attempt below and fall back to
     // the normal retry-then-give-up behavior anyway.
-    Log.info('Stop on media change is on, but this pause was only '+msSincePlay+'ms after playback started \u2014 treating as a startup hiccup and retrying anyway');
+    hiccupRetryCountForTrack++;
+    Log.info('Stop on media change is on, but this track only started recently (retry '+hiccupRetryCountForTrack+' of '+MAX_HICCUP_RETRIES_PER_TRACK+' allowed) \u2014 treating as a startup hiccup and retrying anyway');
   }
 
   const t0 = Date.now();
@@ -3549,6 +3559,39 @@ let lastPlayEventAt = 0;
    without meaningfully weakening the setting for genuine mid-track
    disconnects, which land tens of seconds to minutes in. */
 const MEDIA_CHANGE_GRACE_MS = 2000;
+/* Anchors the grace period to when the CURRENT TRACK actually started —
+   set once in playSong, deliberately NOT touched by resume retries.
+   This is distinct from lastPlayEventAt (which intentionally DOES update
+   on every successful play, including retry-driven ones, for the
+   "Xms since play started" diagnostic text below). Using lastPlayEventAt
+   as the grace-period anchor was itself a real bug (v3.5.7): a real
+   device log showed ~190 pause/resume cycles in under 20 seconds, every
+   single one logged as a "startup hiccup" — because each successful
+   retry reset lastPlayEventAt, so the 2s window never actually expired
+   as long as pauses kept recurring faster than 2s apart. A genuinely
+   flapping bluetooth connection was being fought forever instead of
+   ever being backed off from, and the rapid stop/restart cycling was
+   exactly what got reported as "garbled, stuttery" audio — because it
+   effectively was: real, repeated, involuntary stop-and-restart. */
+let currentTrackStartedAt = 0;
+/* Second, independent bound: how many times the startup-hiccup
+   exception has fired for the CURRENT track. Real bluetooth flapping
+   can cycle every 50-150ms — fast enough to burn through most of the 2s
+   window with dozens of retries before time alone would cut it off.
+   Capping the retry COUNT, not just the time, means a fast-flapping
+   connection gets cut loose quickly rather than being retried at
+   whatever rate it happens to be failing. */
+let hiccupRetryCountForTrack = 0;
+const MAX_HICCUP_RETRIES_PER_TRACK = 5;
+/* Shared by the pause handler and onAppForeground: true if a pause on
+   the CURRENT track should still be treated as a coincidental startup
+   hiccup and retried, rather than respecting "Stop on media change".
+   Bounded two ways (real elapsed time AND retry count) so sustained
+   flapping can't retry indefinitely by either measure. */
+function withinMediaChangeGracePeriod(){
+  const msSinceTrackStart = currentTrackStartedAt ? (Date.now()-currentTrackStartedAt) : Infinity;
+  return msSinceTrackStart < MEDIA_CHANGE_GRACE_MS && hiccupRetryCountForTrack < MAX_HICCUP_RETRIES_PER_TRACK;
+}
 audio.addEventListener('error', ()=>{
   // Some formats (WMA in particular — Chrome has never shipped a WMA
   // decoder, on Android or anywhere else) can fail to decode without
@@ -5241,16 +5284,15 @@ function onAppForeground(){
   // stop running JS until it's foregrounded again, so the original pause
   // event never gets a chance to log) would silently start playing again
   // the instant the app was reopened, with no button press — exactly the
-  // outcome the setting exists to prevent. Applies the same
-  // startup-grace-period reasoning as the pause handler: if the track
-  // had JUST started (a coincidental hiccup rather than a real change),
-  // still retry; if it's been running a while, respect the stop.
-  const msSincePlay = lastPlayEventAt ? (Date.now()-lastPlayEventAt) : Infinity;
-  const respecting = state.stopOnMediaChange && msSincePlay >= MEDIA_CHANGE_GRACE_MS;
+  // outcome the setting exists to prevent. Uses the same shared grace
+  // check as the pause handler (see withinMediaChangeGracePeriod): if
+  // the track had JUST started, still retry; otherwise respect the stop.
+  const respecting = state.stopOnMediaChange && !withinMediaChangeGracePeriod();
   if(userWantsPlaying){
     Log.info('App foreground \u00b7 '+audioDiag()+(respecting ? ' \u2014 stop on media change is on, not auto-resuming' : ' \u2014 checking whether to resume'));
   }
   if(!respecting){
+    if(state.stopOnMediaChange) hiccupRetryCountForTrack++;
     if(userWantsPlaying && audio.paused && audio.src && !intentionalPause){
       audio.play().catch(()=>{});
     }

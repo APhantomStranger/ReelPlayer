@@ -1348,8 +1348,13 @@ const state = {
   stopOnMediaChange: false, // when true, an output-device-change pause is respected instead of auto-resumed
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.5.10';
+const APP_VERSION = '3.5.11';
 const CHANGELOG = [
+  { v:'3.5.11', date:'Sep 8, 2026', items:[
+    'Found the cause of playback resuming on its own after a bluetooth drop, even with "Stop on media change" on. A real device log caught it: the headset itself sends a pause and then, on reconnecting, its own play command — 2.4 seconds apart in the captured case. Those arrive through the same lock-screen/headset control channel as a real button press, and that path had no gating at all, so it silently started playback again. None of the previous fixes covered this, because from the app\u2019s perspective no pause ever happened \u2014 an outside command simply pressed play.',
+    'Now, while "Stop on media change" is on, a play command arriving within 3 seconds of a pause command is treated as a reconnect auto-resume and ignored. Pressing play again immediately overrides it, so you always have the final say. The lock-screen play button, headset buttons, pause, and skip all work exactly as before outside that brief window, and nothing changes at all when the setting is off.',
+    'Worth knowing about the tradeoff: these commands are identical to a genuine button press at the technical level \u2014 there is no way to tell them apart \u2014 so this keys on the telltale pause-then-play pairing instead. That means a headset that reconnects more slowly than 3 seconds could still slip through, and deliberately pausing and un-pausing within 3 seconds will swallow that first press (press again and it works). Every ignored command is logged with the exact measured gap, so if it needs tuning the debug log will show what to tune it to.',
+  ]},
   { v:'3.5.10', date:'Sep 7, 2026', items:[
     'Found and fixed the real cause of a "garbled, stuttery audio" report that turned out not to be audio corruption at all: with "Stop on media change" on, a real device log showed one song racking up roughly 190 separate pause/resume cycles in under 20 seconds \u2014 the app was genuinely, repeatedly stopping and restarting playback that fast, which is exactly what that sounds like. Root cause was in the v3.5.7 "startup hiccup" exception: it measured time since the most recent successful resume, which resets every time a retry succeeds \u2014 so as long as pauses kept recurring faster than the 2-second window, that window never actually expired, and a genuinely flapping bluetooth connection got fought forever instead of ever being backed off from.',
     'Fixed with two independent limits, so it can\u2019t happen either way: the grace period is now anchored to when the current track actually started (unaffected by how many times it\u2019s been resumed since), AND a hard cap of 5 retries per track, so even a connection flapping faster than 2 seconds gets cut loose quickly rather than retried at whatever rate it happens to be failing. Both the pause handler and the "reopening the app" safety net (v3.5.9) now share the exact same check, so this can\u2019t drift out of sync between the two again.',
@@ -3285,6 +3290,12 @@ function prevTrack(){
   }
 }
 function togglePlay(){
+  // Any deliberate in-app play/pause clears the external-pause marker:
+  // the suppression heuristic below only exists to catch a bluetooth
+  // reconnect's own pause-then-play pair, and once the user has taken
+  // manual control here, a stale marker must not cause a later genuine
+  // lock-screen press to be ignored.
+  lastExternalPauseAt = 0;
   if(state.mode==='book'){
     if(!state.currentBookId) return;
     if(audio.paused){ audio.play(); state.playing=true; }
@@ -3592,6 +3603,57 @@ function withinMediaChangeGracePeriod(){
   const msSinceTrackStart = currentTrackStartedAt ? (Date.now()-currentTrackStartedAt) : Infinity;
   return msSinceTrackStart < MEDIA_CHANGE_GRACE_MS && hiccupRetryCountForTrack < MAX_HICCUP_RETRIES_PER_TRACK;
 }
+
+/* ---- External (MediaSession) play/pause gating ----
+   Confirmed from a real device log (v3.5.11): a bluetooth headset
+   dropping and reconnecting sends its OWN pause and then its OWN play
+   through MediaSession — the log showed a pause action at 13:19:58.625
+   followed by a play action at 13:20:01.072, 2.4s apart, with no
+   corresponding audio-element pause event at all (so none of the
+   existing pause-handler gating ever saw it). That silently resumed
+   playback despite "Stop on media change" being on, because the
+   MediaSession play handler had no gating whatsoever.
+
+   These commands are byte-for-byte identical to a genuine lock-screen
+   or headset button press — the API gives no way to tell them apart.
+   What DOES distinguish them is the pairing: a device reconnecting
+   emits pause-then-play within a couple of seconds, whereas a person
+   who pauses deliberately leaves it paused for a while before
+   resuming. So we only suppress a play that arrives suspiciously soon
+   after a pause, and only while the setting is on. A lock-screen play
+   press outside that window still works exactly as before.
+
+   Deliberate limitation, worth knowing: this is a heuristic tuned to
+   one observed 2.4s gap. A device that reconnects more slowly than
+   EXTERNAL_RESUME_SUPPRESS_MS would slip through, and a user who
+   really does pause and immediately un-pause within the window will
+   have that first press swallowed (pressing again works). */
+const EXTERNAL_RESUME_SUPPRESS_MS = 3000;
+let lastExternalPauseAt = 0;
+function noteExternalPause(){ lastExternalPauseAt = Date.now(); }
+/* True if an incoming external play command looks like a bluetooth
+   auto-resume rather than a deliberate button press. */
+function shouldSuppressExternalPlay(){
+  if(!state.stopOnMediaChange) return false;
+  if(!lastExternalPauseAt) return false;
+  return (Date.now() - lastExternalPauseAt) < EXTERNAL_RESUME_SUPPRESS_MS;
+}
+/* Shared by both the music and audiobook MediaSession play handlers so
+   the two can't drift apart. Returns true if the play was allowed. */
+function handleExternalPlayRequest(){
+  if(shouldSuppressExternalPlay()){
+    const gap = Date.now() - lastExternalPauseAt;
+    Log.info('MediaSession: play action ignored \u2014 arrived only '+gap+'ms after an external pause, which matches a bluetooth reconnect auto-resume rather than a button press (stop on media change is on). Press play again to override.');
+    // Clear the marker so an immediate second press — a real user
+    // deliberately overriding this — is honored rather than suppressed
+    // again by the same stale pause timestamp.
+    lastExternalPauseAt = 0;
+    return false;
+  }
+  Log.info('MediaSession: play action received (lock screen / headset / etc.)');
+  audio.play().catch(e=>{ Log.warn('MediaSession play failed: '+(e&&e.name?e.name:String(e))); });
+  return true;
+}
 audio.addEventListener('error', ()=>{
   // Some formats (WMA in particular — Chrome has never shipped a WMA
   // decoder, on Android or anywhere else) can fail to decode without
@@ -3730,8 +3792,8 @@ function updateMediaSession(s){
     const url = artUrlCache.get(s.id);
     if(url) meta.artwork = [{src:url, sizes:'512x512', type:'image/jpeg'}];
     navigator.mediaSession.metadata = new MediaMetadata(meta);
-    navigator.mediaSession.setActionHandler('play', ()=>{ Log.info('MediaSession: play action received (lock screen / headset / etc.)'); audio.play(); });
-    navigator.mediaSession.setActionHandler('pause', ()=>{ Log.info('MediaSession: pause action received (lock screen / headset / etc.)'); requestPause(); });
+    navigator.mediaSession.setActionHandler('play', ()=>{ handleExternalPlayRequest(); });
+    navigator.mediaSession.setActionHandler('pause', ()=>{ Log.info('MediaSession: pause action received (lock screen / headset / etc.)'); noteExternalPause(); requestPause(); });
     navigator.mediaSession.setActionHandler('previoustrack', ()=>prevTrack());
     navigator.mediaSession.setActionHandler('nexttrack', ()=>nextTrack(false));
     navigator.mediaSession.setActionHandler('seekto', (d)=>{ if(d.seekTime!=null) audio.currentTime=d.seekTime; });
@@ -6159,8 +6221,8 @@ function updateBookMediaSession(){
   try{
     const meta = { title:b.title, artist:b.author||'Audiobook', album: b.parts.length>1? 'Chapter '+(state.currentPart+1) : '' };
     navigator.mediaSession.metadata = new MediaMetadata(meta);
-    navigator.mediaSession.setActionHandler('play', ()=>{ Log.info('MediaSession: play action received (lock screen / headset / etc.)'); audio.play(); });
-    navigator.mediaSession.setActionHandler('pause', ()=>{ Log.info('MediaSession: pause action received (lock screen / headset / etc.)'); requestPause(); saveBookProgress(true); });
+    navigator.mediaSession.setActionHandler('play', ()=>{ handleExternalPlayRequest(); });
+    navigator.mediaSession.setActionHandler('pause', ()=>{ Log.info('MediaSession: pause action received (lock screen / headset / etc.)'); noteExternalPause(); requestPause(); saveBookProgress(true); });
     // lock-screen prev/next map to ±30s for audiobooks
     navigator.mediaSession.setActionHandler('previoustrack', ()=>bookSkip(-30));
     navigator.mediaSession.setActionHandler('nexttrack', ()=>bookSkip(30));

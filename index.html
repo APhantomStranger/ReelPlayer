@@ -1348,8 +1348,13 @@ const state = {
   stopOnMediaChange: false, // when true, an output-device-change pause is respected instead of auto-resumed
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.6.0';
+const APP_VERSION = '3.6.1';
 const CHANGELOG = [
+  { v:'3.6.1', date:'Sep 9, 2026', items:[
+    'Every pause and every resume is now logged, unconditionally, with a specific reason — search the debug log for "PAUSED" or "RESUMED" to see the complete history in order, nothing excluded. This closes real gaps: pressing play in the app logged nothing at all before this (the single biggest one), pressing pause in the app was also silent, repeat-one\u2019s restart logged nothing on success or failure, and a track reaching its natural end wasn\u2019t logged either. Audiobook mode additionally got a missing success confirmation when a chapter starts, matching what music mode already had.',
+    'Every intentional pause/resume in the app (both play/pause buttons, both modes; MediaSession lock-screen/headset actions; sleep timer, both variants; deleting the currently-playing file; app-foreground recovery; scheduled retries) now tags a specific, human-readable reason right before acting, so the log line says exactly why \u2014 not just that something happened.',
+    'A play() call that somehow arrives without any of the app\u2019s own code tagging a reason is still logged explicitly as an unknown cause, rather than silently disappearing \u2014 by design, this should never actually happen, but if it ever does, it will now show up rather than being invisible.',
+  ]},
   { v:'3.6.0', date:'Sep 8, 2026', items:[
     'Fixed the actual reason installing Reel to the home screen still showed a Chrome-badged icon instead of a real standalone app: the manifest was embedded as a data: URI, which Chrome cannot use to generate an installed app (WebAPK) from \u2014 a hard blocker regardless of anything else \u2014 and it was also missing start_url entirely, itself a required field. Both are now fixed: manifest.json is a real file with every field the old one had, plus the start_url and scope it was missing. A proper service worker (sw.js) is included too, since Chrome requires an active one as part of its installability check.',
     'This matters beyond just the icon: a bookmark shortcut runs as an ordinary Chrome tab, so Android was applying Chrome\u2019s OWN background/battery throttling to it. A real installed app gets meaningfully more lenient treatment. This may materially help the background-pausing behavior this project has been chasing \u2014 worth monitoring alongside the other two open items. It is not a guarantee: no browser-based player gets quite the same OS treatment as a native app with its own foreground service.',
@@ -3221,11 +3226,13 @@ async function playSong(id){
   pushRecent(id);
   const loadStart = Date.now();
   try{
+    pendingResumeReason = FRESH_TRACK_START;
     await audio.play();
     state.playing = true;
     Log.info('Playing "'+s.title+'" by '+s.artist+' \u00b7 load-to-play '+(Date.now()-loadStart)+'ms \u00b7 '+audioDiag());
   }catch(e){
     state.playing = false;
+    pendingResumeReason = null;
     const name = e && e.name;
     Log.warn('Native playback failed for "'+s.title+'" ('+s.path+'): '+(name||e));
     if(name==='NotSupportedError'){
@@ -3265,9 +3272,9 @@ function playContext(ids, startIndex){
   else playQueueAt(startIndex>=0 ? startIndex : 0);
 }
 function nextTrack(auto){
-  if(auto && sleepEndOfTrack){ requestPause(); clearSleep(); if(state.view==='settings') renderSettings(); return; }
+  if(auto && sleepEndOfTrack){ requestPause('sleep timer set to stop at end of track'); clearSleep(); if(state.view==='settings') renderSettings(); return; }
   if(state.queue.length===0) return;
-  if(state.repeat==='one' && auto){ audio.currentTime=0; audio.play(); return; }
+  if(state.repeat==='one' && auto){ audio.currentTime=0; pendingResumeReason='repeat-one restart from beginning'; audio.play(); return; }
   if(state.shuffle){
     state.shufflePos = (state.shufflePos||0)+1;
     if(state.shufflePos>=state.shuffleOrder.length){
@@ -3304,8 +3311,8 @@ function togglePlay(){
   lastExternalPauseAt = 0;
   if(state.mode==='book'){
     if(!state.currentBookId) return;
-    if(audio.paused){ audio.play(); state.playing=true; }
-    else { requestPause(); saveBookProgress(true); }
+    if(audio.paused){ pendingResumeReason='user pressed play (audiobook)'; audio.play(); state.playing=true; }
+    else { requestPause('user pressed pause (audiobook)'); saveBookProgress(true); }
     updatePlayButtons();
     return;
   }
@@ -3315,8 +3322,8 @@ function togglePlay(){
     if(ids.length){ playContext(ids, state.shuffle ? -1 : 0); }
     return;
   }
-  if(audio.paused){ audio.play(); state.playing=true; }
-  else { requestPause(); }
+  if(audio.paused){ pendingResumeReason='user pressed play'; audio.play(); state.playing=true; }
+  else { requestPause('user pressed pause'); }
   updatePlayButtons();
 }
 
@@ -3348,8 +3355,44 @@ let intentionalPause = false;
 // action (via requestPause) or a genuinely successful play, so a failed
 // attempt just means "try again," never "give up."
 let userWantsPlaying = false;
-function requestPause(){
+
+/* ============================================================================
+   UNCONDITIONAL PAUSE/RESUME LOGGING (v3.6.1)
+   Added per explicit request: every single pause and every single
+   resume, for ANY reason, gets exactly one clear log line — not just
+   the causes the code anticipated. Search the debug log for "PAUSED"
+   or "RESUMED" to see every transition in order, nothing excluded.
+
+   Design: every call site that intentionally pauses or resumes tags a
+   reason immediately before doing so; the native 'pause'/'play'
+   listeners (the ONE place every such event, from ANY cause, always
+   passes through) read that tag and log it centrally, then clear it.
+   A pause/play the app didn't cause at all (no tag present) still gets
+   logged — as an explicit "unknown cause" line, not silently skipped —
+   which is exactly what guarantees "for any reason, don't care what it
+   is" rather than only covering paths this code happened to think of.
+============================================================================ */
+// Reason for the NEXT intentional pause, read once by the native pause
+// listener's intentional branch. requestPause(reason) sets this.
+let pendingIntentionalPauseReason = 'unspecified (no reason given)';
+// Sentinel meaning "this play() is a brand-new track starting, already
+// logged distinctly by playSong/playBookPart as its own 'Playing ...'
+// line — the generic RESUMED line would just be noise here."
+const FRESH_TRACK_START = Symbol('fresh-track-start');
+// Reason for the NEXT play() call, read once by the native play
+// listener. null means nothing in Reel's own code tagged it — logged
+// as an explicit unknown-cause line rather than silently skipped.
+let pendingResumeReason = null;
+function logPaused(reason){
+  Log.info('PAUSED \u2014 '+reason+' \u00b7 '+audioDiag());
+}
+function logResumed(reason){
+  Log.info('RESUMED \u2014 '+reason+' \u00b7 '+audioDiag());
+}
+
+function requestPause(reason){
   intentionalPause = true;
+  pendingIntentionalPauseReason = reason || 'unspecified (no reason given)';
   userWantsPlaying = false;
   try{ audio.pause(); }catch(e){}
 }
@@ -3376,9 +3419,11 @@ function scheduleResumeRetries(reason){
       if(myToken !== resumeRetryToken) return;
       if(!(userWantsPlaying && audio.paused && audio.src && !intentionalPause)) return;
       Log.info('Resume retry '+n+' ('+reason+') \u00b7 '+audioDiag());
+      pendingResumeReason = 'scheduled retry '+n+' ('+reason+')';
       audio.play().then(()=>{
         Log.info('Resume retry '+n+' succeeded');
       }).catch(e=>{
+        pendingResumeReason = null; // rejected — no 'play' event will fire to consume this tag
         Log.warn('Resume retry '+n+' failed: '+(e&&e.name?e.name:String(e)));
         /* next scheduled attempt, if any, will still try */
       });
@@ -3407,10 +3452,30 @@ audio.addEventListener('waiting', ()=>{
   Log.warn('Waiting for data \u2014 "'+(s?s.title:'?')+'" \u00b7 '+audioDiag()+' (further waits on this track will not re-log)');
 });
 
-audio.addEventListener('play', ()=>{ lastPlayEventAt=Date.now(); state.playing=true; userWantsPlaying=true; updatePlayButtons(); $('player').classList.remove('paused'); markPlayingRows(); });
+audio.addEventListener('play', ()=>{
+  lastPlayEventAt=Date.now();
+  state.playing=true; userWantsPlaying=true;
+  updatePlayButtons(); $('player').classList.remove('paused'); markPlayingRows();
+  // The one guaranteed place every successful play/resume passes through,
+  // regardless of what caused it — see the pendingResumeReason block above.
+  if(pendingResumeReason === FRESH_TRACK_START){
+    // A new track starting — already logged distinctly as "Playing ..."
+    // by playSong/playBookPart. Nothing more to log here.
+  }else if(pendingResumeReason){
+    logResumed(pendingResumeReason);
+  }else{
+    // No call site tagged this — by design, every intentional resume
+    // path in this app does. Logged anyway, explicitly, so a genuinely
+    // unanticipated cause is never silently invisible.
+    logResumed('unknown \u2014 no code path tagged this play() call');
+  }
+  pendingResumeReason = null;
+});
 audio.addEventListener('pause', ()=>{
   if(intentionalPause){
     intentionalPause = false;
+    logPaused('intentional \u2014 '+pendingIntentionalPauseReason);
+    pendingIntentionalPauseReason = 'unspecified (no reason given)';
     state.playing = false;
     updatePlayButtons();
     $('player').classList.add('paused');
@@ -3428,7 +3493,9 @@ audio.addEventListener('pause', ()=>{
     // resume's play() promise could resolve after the src had already
     // been swapped out from under it — a real, confirmed source of the
     // garbled/stuttery auto-advance reports. The 'ended' listener below
-    // handles the actual track advance; nothing to do here.
+    // handles the actual track advance; logged here purely so the
+    // pause/resume history has no gaps, per explicit request.
+    logPaused('track reached its natural end \u2014 not a real stop, advancing to next track');
     return;
   }
   // Nothing in Reel asked for this pause — capture full state so a real
@@ -3439,7 +3506,7 @@ audio.addEventListener('pause', ()=>{
   const s = state.library.get(state.currentId);
   const msSincePlay = lastPlayEventAt ? (Date.now()-lastPlayEventAt) : Infinity;
   const since = lastPlayEventAt ? msSincePlay+'ms since play started' : 'no prior play';
-  Log.warn('Unintended pause \u2014 "'+(s?s.title:'?')+'" \u00b7 '+audioDiag()+' \u00b7 '+since);
+  logPaused('external/unintended \u2014 "'+(s?s.title:'?')+'" \u2014 '+since);
 
   if(state.stopOnMediaChange && !withinMediaChangeGracePeriod()){
     // "Stop on media change" is ON, and this is no longer within the
@@ -3476,9 +3543,11 @@ audio.addEventListener('pause', ()=>{
   }
 
   const t0 = Date.now();
+  pendingResumeReason = 'automatic immediate retry right after an unintended pause';
   audio.play().then(()=>{
     Log.info('Immediate resume succeeded ('+(Date.now()-t0)+'ms)');
   }).catch(e=>{
+    pendingResumeReason = null; // the play() rejected — no 'play' event will fire, nothing to consume this tag
     Log.warn('Immediate resume failed: '+(e&&e.name?e.name:String(e))+' \u2014 scheduling retries \u00b7 '+audioDiag());
     state.playing=false; updatePlayButtons(); $('player').classList.add('paused'); markPlayingRows();
     scheduleResumeRetries('after unintended pause');
@@ -3505,7 +3574,7 @@ if(navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener==='f
     Log.info('Audio device list changed \u00b7 '+audioDiag());
     if(state.stopOnMediaChange && !audio.paused){
       Log.info('Stop on media change is on \u2014 pausing due to device change');
-      requestPause();
+      requestPause('audio device list changed (bluetooth/USB connect or disconnect)');
     }
   });
 }
@@ -3657,7 +3726,8 @@ function handleExternalPlayRequest(){
     return false;
   }
   Log.info('MediaSession: play action received (lock screen / headset / etc.)');
-  audio.play().catch(e=>{ Log.warn('MediaSession play failed: '+(e&&e.name?e.name:String(e))); });
+  pendingResumeReason = 'MediaSession play action (lock screen / headset / etc.)';
+  audio.play().catch(e=>{ pendingResumeReason = null; Log.warn('MediaSession play failed: '+(e&&e.name?e.name:String(e))); });
   return true;
 }
 audio.addEventListener('error', ()=>{
@@ -3799,7 +3869,7 @@ function updateMediaSession(s){
     if(url) meta.artwork = [{src:url, sizes:'512x512', type:'image/jpeg'}];
     navigator.mediaSession.metadata = new MediaMetadata(meta);
     navigator.mediaSession.setActionHandler('play', ()=>{ handleExternalPlayRequest(); });
-    navigator.mediaSession.setActionHandler('pause', ()=>{ Log.info('MediaSession: pause action received (lock screen / headset / etc.)'); noteExternalPause(); requestPause(); });
+    navigator.mediaSession.setActionHandler('pause', ()=>{ Log.info('MediaSession: pause action received (lock screen / headset / etc.)'); noteExternalPause(); requestPause('MediaSession pause action (lock screen / headset / etc.)'); });
     navigator.mediaSession.setActionHandler('previoustrack', ()=>prevTrack());
     navigator.mediaSession.setActionHandler('nexttrack', ()=>nextTrack(false));
     navigator.mediaSession.setActionHandler('seekto', (d)=>{ if(d.seekTime!=null) audio.currentTime=d.seekTime; });
@@ -4117,7 +4187,7 @@ function wireBulkAdd(){
     if(playBtn){
       const id = playBtn.getAttribute('data-id');
       if(id===state.currentId && state.playing){
-        requestPause();
+        requestPause('user pressed pause (from Add Songs list)');
       }else{
         const ids = bulkAddFilteredIds();
         const idx = ids.indexOf(id);
@@ -4958,7 +5028,7 @@ async function deleteSongFileOnly(id, knownHandle){
   }
   // If this exact song is what's currently playing, stop it cleanly before
   // pulling the file out from under it.
-  if(state.currentId===id && state.playing){ requestPause(); }
+  if(state.currentId===id && state.playing){ requestPause('song file is being deleted from your device'); }
   try{
     await handle.remove();
   }catch(e){
@@ -5391,7 +5461,8 @@ function onAppForeground(){
   if(!respecting){
     if(state.stopOnMediaChange) hiccupRetryCountForTrack++;
     if(userWantsPlaying && audio.paused && audio.src && !intentionalPause){
-      audio.play().catch(()=>{});
+      pendingResumeReason = 'app returned to foreground';
+      audio.play().catch(()=>{ pendingResumeReason = null; });
     }
     scheduleResumeRetries('app foreground');
   }
@@ -5514,7 +5585,7 @@ function setSleep(min){
   if(chip) chip.classList.remove('hidden');
   updateSleepChip();
   sleepInterval = setInterval(()=>{
-    if(sleepDeadline - Date.now() <= 0){ requestPause(); clearSleep(); if(state.view==='settings') renderSettings(); return; }
+    if(sleepDeadline - Date.now() <= 0){ requestPause('sleep timer expired'); clearSleep(); if(state.view==='settings') renderSettings(); return; }
     updateSleepChip();
   }, 1000);
 }
@@ -6137,7 +6208,11 @@ async function playBookPart(partIndex, seekTime, autoplay){
   intentionalPause = false;
   renderBookPlayer();
   if(autoplay){
-    try{ await audio.play(); state.playing=true; }catch(e){ state.playing=false; Log.warn('Audiobook playback failed: '+(e&&e.message?e.message:e)); }
+    pendingResumeReason = FRESH_TRACK_START;
+    try{
+      await audio.play(); state.playing=true;
+      Log.info('Playing audiobook "'+b.title+'" chapter '+(partIndex+1)+' \u00b7 '+audioDiag());
+    }catch(e){ state.playing=false; pendingResumeReason=null; Log.warn('Audiobook playback failed: '+(e&&e.message?e.message:e)); }
   }
   updatePlayButtons();
   updateBookMediaSession();
@@ -6257,7 +6332,7 @@ function updateBookMediaSession(){
     const meta = { title:b.title, artist:b.author||'Audiobook', album: b.parts.length>1? 'Chapter '+(state.currentPart+1) : '' };
     navigator.mediaSession.metadata = new MediaMetadata(meta);
     navigator.mediaSession.setActionHandler('play', ()=>{ handleExternalPlayRequest(); });
-    navigator.mediaSession.setActionHandler('pause', ()=>{ Log.info('MediaSession: pause action received (lock screen / headset / etc.)'); noteExternalPause(); requestPause(); saveBookProgress(true); });
+    navigator.mediaSession.setActionHandler('pause', ()=>{ Log.info('MediaSession: pause action received (lock screen / headset / etc.)'); noteExternalPause(); requestPause('MediaSession pause action (lock screen / headset / etc.)'); saveBookProgress(true); });
     // lock-screen prev/next map to ±30s for audiobooks
     navigator.mediaSession.setActionHandler('previoustrack', ()=>bookSkip(-30));
     navigator.mediaSession.setActionHandler('nexttrack', ()=>bookSkip(30));

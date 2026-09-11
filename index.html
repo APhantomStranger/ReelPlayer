@@ -1348,8 +1348,17 @@ const state = {
   stopOnMediaChange: false, // when true, an output-device-change pause is respected instead of auto-resumed
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.6.1';
+const APP_VERSION = '3.6.3';
 const CHANGELOG = [
+  { v:'3.6.3', date:'Sep 11, 2026', items:[
+    'Found something new from a real device log: playback resumed 82 seconds after "Stop on media change" had deliberately respected a pause \u2014 with no button press, no lock-screen/headset action, no app-foreground check, and no scheduled retry involved. Every real place this app itself calls play() is individually tagged with a reason (confirmed by re-auditing all nine of them), and none of their tags were present. The only remaining explanation: something outside this page\u2019s own code \u2014 most likely Chrome or Android\u2019s own audio-focus-recovery behavior \u2014 resumed the underlying player directly, beneath the lock-screen/headset API this app can actually listen to.',
+    'That can\u2019t be intercepted at the source, so instead: if a resume happens with no recognized cause WHILE a stop was deliberately in effect, it\u2019s now reversed immediately, and logged plainly as a reversal rather than left to quietly win. An untagged resume with no prior deliberate stop is still just logged as before, not fought \u2014 this only pushes back in the specific situation "Stop on media change" exists to protect.',
+    'Also fixed, from the same investigation: repeat-one\u2019s track restart never reset the retry budget the way every other track start does, so a track that used up its 5 retries on one loop would carry that exhausted count into every later loop. Confirmed NOT to be the cause of the report that prompted looking at it, but a real bug regardless \u2014 fixed either way.',
+  ]},
+  { v:'3.6.2', date:'Sep 10, 2026', items:[
+    'Fixed a real gap found while investigating a report where a pause hit "Stop on media change"\u2019s retry cap unusually early: repeat-one\u2019s restart never went through the same reset the every other track-start path uses, so a track that used up its whole 5-retry budget on one loop would carry that exhausted count into every subsequent loop \u2014 permanently treating that track as "already retried 5 times" even long after a fresh restart. A repeat-one restart now resets the same state a normal track start does, so each loop gets its own fresh budget.',
+    'Honest note: this is a confirmed, real fix, but it\u2019s not confirmed to be the cause of that specific report \u2014 that would require knowing whether repeat-one was active at the time, which the pasted log excerpt didn\u2019t show either way.',
+  ]},
   { v:'3.6.1', date:'Sep 9, 2026', items:[
     'Every pause and every resume is now logged, unconditionally, with a specific reason — search the debug log for "PAUSED" or "RESUMED" to see the complete history in order, nothing excluded. This closes real gaps: pressing play in the app logged nothing at all before this (the single biggest one), pressing pause in the app was also silent, repeat-one\u2019s restart logged nothing on success or failure, and a track reaching its natural end wasn\u2019t logged either. Audiobook mode additionally got a missing success confirmation when a chapter starts, matching what music mode already had.',
     'Every intentional pause/resume in the app (both play/pause buttons, both modes; MediaSession lock-screen/headset actions; sleep timer, both variants; deleting the currently-playing file; app-foreground recovery; scheduled retries) now tags a specific, human-readable reason right before acting, so the log line says exactly why \u2014 not just that something happened.',
@@ -3274,7 +3283,21 @@ function playContext(ids, startIndex){
 function nextTrack(auto){
   if(auto && sleepEndOfTrack){ requestPause('sleep timer set to stop at end of track'); clearSleep(); if(state.view==='settings') renderSettings(); return; }
   if(state.queue.length===0) return;
-  if(state.repeat==='one' && auto){ audio.currentTime=0; pendingResumeReason='repeat-one restart from beginning'; audio.play(); return; }
+  if(state.repeat==='one' && auto){
+    // A repeat-one restart doesn't go through playSong, so it was never
+    // resetting the media-change grace-period state (currentTrackStartedAt /
+    // hiccupRetryCountForTrack) — meaning a track that used up its retry
+    // budget on one loop would carry that exhausted count into every
+    // subsequent loop, permanently treating the same track as "already
+    // retried 5 times" even long after a fresh restart. A restart is
+    // conceptually a fresh start for this purpose, same as playSong's.
+    audio.currentTime=0;
+    currentTrackStartedAt = Date.now();
+    hiccupRetryCountForTrack = 0;
+    pendingResumeReason='repeat-one restart from beginning';
+    audio.play();
+    return;
+  }
   if(state.shuffle){
     state.shufflePos = (state.shufflePos||0)+1;
     if(state.shufflePos>=state.shuffleOrder.length){
@@ -3461,13 +3484,31 @@ audio.addEventListener('play', ()=>{
   if(pendingResumeReason === FRESH_TRACK_START){
     // A new track starting — already logged distinctly as "Playing ..."
     // by playSong/playBookPart. Nothing more to log here.
+    respectedStopActive = false;
   }else if(pendingResumeReason){
     logResumed(pendingResumeReason);
+    respectedStopActive = false; // a resume this app actually recognizes and caused
   }else{
     // No call site tagged this — by design, every intentional resume
     // path in this app does. Logged anyway, explicitly, so a genuinely
     // unanticipated cause is never silently invisible.
     logResumed('unknown \u2014 no code path tagged this play() call');
+    if(respectedStopActive){
+      // Confirmed from a real device log (v3.6.3): this app had already
+      // deliberately stopped this track because "Stop on media change"
+      // respected a real pause — then, with no button press, no
+      // MediaSession action, and no app-foreground check in between,
+      // playback resumed anyway. That can only mean something OUTSIDE
+      // this page's own JS resumed the underlying media element
+      // directly — most likely Chrome/Android's own audio-focus
+      // recovery, which sits beneath the MediaSession API surface this
+      // app can actually listen to and can't be intercepted at the
+      // source. Fight back instead: reverse it immediately, since an
+      // unexplained resume while a deliberate stop is in effect is
+      // exactly what this setting exists to prevent.
+      Log.warn('Reversing this resume \u2014 it happened while a "Stop on media change" stop was deliberately in effect, with no recognized cause');
+      requestPause('reversing an unexplained external resume while a stop-on-media-change stop was in effect');
+    }
   }
   pendingResumeReason = null;
 });
@@ -3518,6 +3559,7 @@ audio.addEventListener('pause', ()=>{
     // Respect it instead of fighting it with a resume retry.
     const capped = hiccupRetryCountForTrack >= MAX_HICCUP_RETRIES_PER_TRACK;
     Log.info('Stop on media change is on ('+(capped ? 'retried '+hiccupRetryCountForTrack+' times already' : 'past the startup window')+') \u2014 leaving playback paused, not attempting to resume');
+    respectedStopActive = true;
     state.playing = false;
     userWantsPlaying = false;
     updatePlayButtons();
@@ -3669,6 +3711,22 @@ let currentTrackStartedAt = 0;
    whatever rate it happens to be failing. */
 let hiccupRetryCountForTrack = 0;
 const MAX_HICCUP_RETRIES_PER_TRACK = 5;
+/* Set true whenever the pause handler deliberately respects a stop
+   (past the grace period/retry cap while "Stop on media change" is on),
+   cleared the moment any resume the app actually recognizes happens.
+   Confirmed from a real device log (v3.6.3): playback resumed 82
+   seconds after a respected stop, with NONE of this app's own tagged
+   resume paths firing — no MediaSession action, no app-foreground
+   check, no button press, nothing scheduleResumeRetries would produce.
+   Every real audio.play() call site in this file is tagged (see
+   pendingResumeReason below); an untagged 'play' event reaching this
+   flag set means something OUTSIDE this page's own JS resumed the
+   underlying media element directly — most likely Chrome or Android's
+   own audio-focus-recovery machinery, which operates beneath the
+   MediaSession action-handler API this app can actually listen to.
+   That can't be intercepted at the source, so instead: if it happens
+   while a stop was deliberately in effect, immediately reverse it. */
+let respectedStopActive = false;
 /* Shared by the pause handler and onAppForeground: true if a pause on
    the CURRENT track should still be treated as a coincidental startup
    hiccup and retried, rather than respecting "Stop on media change".
@@ -5637,6 +5695,7 @@ function setEQEnabled(on){
 }
 function setStopOnMediaChange(on){
   state.stopOnMediaChange = on;
+  if(!on) respectedStopActive = false;
   Log.info('Stop on media change: '+(on?'enabled':'disabled'));
   persistPrefs();
 }

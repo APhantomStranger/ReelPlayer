@@ -1348,8 +1348,14 @@ const state = {
   stopOnMediaChange: false, // when true, an output-device-change pause is respected instead of auto-resumed
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.6.3';
+const APP_VERSION = '3.7.0';
 const CHANGELOG = [
+  { v:'3.7.0', date:'Sep 11, 2026', items:[
+    'Redesigned how "Stop on media change" decides whether to fight a pause or respect it, per direct request. The old system anchored its decision to how long the TRACK had been playing (a grace period since track-start, with a per-track retry-count cap) \u2014 a proxy that produced real, confusing bugs: repeat-one never reset it (v3.6.2), and a burst of rapid pauses could show "retried 5 times already" after what looked like almost no time at all. That whole system is gone.',
+    'In its place: every unintended pause now gets three quick rechecks \u2014 20ms, then 60ms, then 100ms after the pause \u2014 actually attempting to resume each time, before committing to a visible "stopped" state. This tests the thing that actually matters (is the device back yet) instead of a stand-in for it, applies identically no matter when in a track the pause happens, and needs no per-track state that could leak between tracks or loops. Any successful recheck immediately continues playback, logged the normal way; only if all three genuinely fail is the stop respected.',
+    'Simplified accordingly: reopening the app while a stop is in effect no longer has separate grace-period logic \u2014 by the time a human actually reopens the app, any pause still in effect has already been through its 100ms recheck burst and settled, so there\u2019s nothing left to second-guess there. The v3.6.3 countermeasure (reversing a resume with no recognized cause while a stop is deliberately in effect) is unchanged and still applies on top of this.',
+    'Everything about the non-"Stop on media change" behavior \u2014 the plain immediate-retry-then-scheduled-retries path used when the setting is off \u2014 is completely untouched.',
+  ]},
   { v:'3.6.3', date:'Sep 11, 2026', items:[
     'Found something new from a real device log: playback resumed 82 seconds after "Stop on media change" had deliberately respected a pause \u2014 with no button press, no lock-screen/headset action, no app-foreground check, and no scheduled retry involved. Every real place this app itself calls play() is individually tagged with a reason (confirmed by re-auditing all nine of them), and none of their tags were present. The only remaining explanation: something outside this page\u2019s own code \u2014 most likely Chrome or Android\u2019s own audio-focus-recovery behavior \u2014 resumed the underlying player directly, beneath the lock-screen/headset API this app can actually listen to.',
     'That can\u2019t be intercepted at the source, so instead: if a resume happens with no recognized cause WHILE a stop was deliberately in effect, it\u2019s now reversed immediately, and logged plainly as a reversal rather than left to quietly win. An untagged resume with no prior deliberate stop is still just logged as before, not fought \u2014 this only pushes back in the specific situation "Stop on media change" exists to protect.',
@@ -3225,8 +3231,6 @@ async function playSong(id){
   stallLoggedForSrc = false;
   waitLoggedForSrc = false;
   posStateErrorLoggedForSrc = false;
-  currentTrackStartedAt = Date.now();
-  hiccupRetryCountForTrack = 0;
   currentObjectUrl = URL.createObjectURL(file);
   audio.src = currentObjectUrl;
   state.currentId = id;
@@ -3284,16 +3288,11 @@ function nextTrack(auto){
   if(auto && sleepEndOfTrack){ requestPause('sleep timer set to stop at end of track'); clearSleep(); if(state.view==='settings') renderSettings(); return; }
   if(state.queue.length===0) return;
   if(state.repeat==='one' && auto){
-    // A repeat-one restart doesn't go through playSong, so it was never
-    // resetting the media-change grace-period state (currentTrackStartedAt /
-    // hiccupRetryCountForTrack) — meaning a track that used up its retry
-    // budget on one loop would carry that exhausted count into every
-    // subsequent loop, permanently treating the same track as "already
-    // retried 5 times" even long after a fresh restart. A restart is
-    // conceptually a fresh start for this purpose, same as playSong's.
+    // (v3.6.2 fixed a bug here where this restart never reset the old
+    // per-track retry-cap state, letting an exhausted budget leak across
+    // loops. v3.7.0 removed that whole state system — see
+    // beginMediaChangeRecheckBurst — so there's nothing left to reset.)
     audio.currentTime=0;
-    currentTrackStartedAt = Date.now();
-    hiccupRetryCountForTrack = 0;
     pendingResumeReason='repeat-one restart from beginning';
     audio.play();
     return;
@@ -3549,39 +3548,15 @@ audio.addEventListener('pause', ()=>{
   const since = lastPlayEventAt ? msSincePlay+'ms since play started' : 'no prior play';
   logPaused('external/unintended \u2014 "'+(s?s.title:'?')+'" \u2014 '+since);
 
-  if(state.stopOnMediaChange && !withinMediaChangeGracePeriod()){
-    // "Stop on media change" is ON, and this is no longer within the
-    // brief startup grace period (by elapsed time OR retry count — see
-    // withinMediaChangeGracePeriod): very often exactly this — Android
-    // pausing playback itself when a bluetooth device disconnects or USB
-    // is unplugged (the same OS behavior that stops any well-behaved
-    // media app from suddenly blasting through the phone speaker).
-    // Respect it instead of fighting it with a resume retry.
-    const capped = hiccupRetryCountForTrack >= MAX_HICCUP_RETRIES_PER_TRACK;
-    Log.info('Stop on media change is on ('+(capped ? 'retried '+hiccupRetryCountForTrack+' times already' : 'past the startup window')+') \u2014 leaving playback paused, not attempting to resume');
-    respectedStopActive = true;
-    state.playing = false;
-    userWantsPlaying = false;
-    updatePlayButtons();
-    $('player').classList.add('paused');
-    markPlayingRows();
-    return;
-  }
   if(state.stopOnMediaChange){
-    // Confirmed from a real device log (v3.5.7): pauses landing well
-    // under a second after playback actually started have a different
-    // signature than a genuine mid-listening disconnect — they look
-    // like a brief bluetooth route-renegotiation hiccup right as a NEW
-    // playback session begins, not a real device change. A device that
-    // was successfully playing audio a moment ago hasn't really
-    // "changed". Left unhandled, this setting silently stopped
-    // retrying these and the user had to manually reopen the app and
-    // hit play — exactly the "I keep having to open it back up" report.
-    // Retry through it like the setting were off; a genuine device
-    // change will simply fail the resume attempt below and fall back to
-    // the normal retry-then-give-up behavior anyway.
-    hiccupRetryCountForTrack++;
-    Log.info('Stop on media change is on, but this track only started recently (retry '+hiccupRetryCountForTrack+' of '+MAX_HICCUP_RETRIES_PER_TRACK+' allowed) \u2014 treating as a startup hiccup and retrying anyway');
+    // v3.7.0 redesign: rather than deciding once, immediately, based on
+    // how long the TRACK had been playing (a proxy that produced real,
+    // confusing edge cases — see the v3.6.2 repeat-one bug and the
+    // "88ms since play started / retried 5 times already" mismatch),
+    // give the device itself a moment to reconnect before committing to
+    // a visible "stopped" state. See beginMediaChangeRecheckBurst.
+    beginMediaChangeRecheckBurst(state.currentId);
+    return;
   }
 
   const t0 = Date.now();
@@ -3679,41 +3654,24 @@ let posStateErrorLoggedForSrc = false;
    useful for spotting whether pauses cluster right after a track starts
    (decoder-warmup issue?) vs mid-track (buffer starve / audio focus). */
 let lastPlayEventAt = 0;
-/* How soon after playback actually starts a pause still counts as a
-   "just started" hiccup rather than a genuine mid-listening device
-   change, for the "Stop on media change" grace period below. Confirmed
-   from a real device log: bluetooth route-renegotiation blips right at
-   the start of a new track land well under 1s; 2s gives real margin
-   without meaningfully weakening the setting for genuine mid-track
-   disconnects, which land tens of seconds to minutes in. */
-const MEDIA_CHANGE_GRACE_MS = 2000;
-/* Anchors the grace period to when the CURRENT TRACK actually started —
-   set once in playSong, deliberately NOT touched by resume retries.
-   This is distinct from lastPlayEventAt (which intentionally DOES update
-   on every successful play, including retry-driven ones, for the
-   "Xms since play started" diagnostic text below). Using lastPlayEventAt
-   as the grace-period anchor was itself a real bug (v3.5.7): a real
-   device log showed ~190 pause/resume cycles in under 20 seconds, every
-   single one logged as a "startup hiccup" — because each successful
-   retry reset lastPlayEventAt, so the 2s window never actually expired
-   as long as pauses kept recurring faster than 2s apart. A genuinely
-   flapping bluetooth connection was being fought forever instead of
-   ever being backed off from, and the rapid stop/restart cycling was
-   exactly what got reported as "garbled, stuttery" audio — because it
-   effectively was: real, repeated, involuntary stop-and-restart. */
-let currentTrackStartedAt = 0;
-/* Second, independent bound: how many times the startup-hiccup
-   exception has fired for the CURRENT track. Real bluetooth flapping
-   can cycle every 50-150ms — fast enough to burn through most of the 2s
-   window with dozens of retries before time alone would cut it off.
-   Capping the retry COUNT, not just the time, means a fast-flapping
-   connection gets cut loose quickly rather than being retried at
-   whatever rate it happens to be failing. */
-let hiccupRetryCountForTrack = 0;
-const MAX_HICCUP_RETRIES_PER_TRACK = 5;
+/* How the "Stop on media change" decision works (v3.7.0 redesign):
+   rather than anchoring to how long the TRACK had been playing (the old
+   grace-period system — see the removed MEDIA_CHANGE_GRACE_MS/
+   currentTrackStartedAt/hiccupRetryCountForTrack for the history of why
+   that was fragile: it caused a real repeat-one bug in v3.6.2 and a
+   confusing "88ms since play started / retried 5 times already"
+   mismatch), every unintended pause now gets the SAME short burst of
+   quick rechecks — 20ms, then 60ms, then 100ms after the pause — before
+   committing to a visible "stopped" state. Only if all three fail is
+   the stop actually respected. This directly tests the thing that
+   matters (is the device back yet), not a proxy for it, and needs no
+   per-track state that could leak across tracks/loops at all. */
+const MEDIA_CHANGE_RECHECK_GAPS_MS = [20, 40, 40]; // successive gaps; cumulative 20ms, 60ms, 100ms after the pause
+let mediaChangeRecheckToken = 0; // a newer burst (or a track/setting change) invalidates an older in-flight one
 /* Set true whenever the pause handler deliberately respects a stop
-   (past the grace period/retry cap while "Stop on media change" is on),
-   cleared the moment any resume the app actually recognizes happens.
+   (all three rechecks failed, or "Stop on media change" was already off
+   when a NEW check would have fired — see below), cleared the moment
+   any resume the app actually recognizes happens.
    Confirmed from a real device log (v3.6.3): playback resumed 82
    seconds after a respected stop, with NONE of this app's own tagged
    resume paths firing — no MediaSession action, no app-foreground
@@ -3727,14 +3685,46 @@ const MAX_HICCUP_RETRIES_PER_TRACK = 5;
    That can't be intercepted at the source, so instead: if it happens
    while a stop was deliberately in effect, immediately reverse it. */
 let respectedStopActive = false;
-/* Shared by the pause handler and onAppForeground: true if a pause on
-   the CURRENT track should still be treated as a coincidental startup
-   hiccup and retried, rather than respecting "Stop on media change".
-   Bounded two ways (real elapsed time AND retry count) so sustained
-   flapping can't retry indefinitely by either measure. */
-function withinMediaChangeGracePeriod(){
-  const msSinceTrackStart = currentTrackStartedAt ? (Date.now()-currentTrackStartedAt) : Infinity;
-  return msSinceTrackStart < MEDIA_CHANGE_GRACE_MS && hiccupRetryCountForTrack < MAX_HICCUP_RETRIES_PER_TRACK;
+function respectMediaChangeStop(reason){
+  Log.info('Stop on media change: '+reason+' \u2014 leaving playback paused, not attempting to resume');
+  respectedStopActive = true;
+  state.playing = false;
+  userWantsPlaying = false;
+  updatePlayButtons();
+  $('player').classList.add('paused');
+  markPlayingRows();
+}
+/* Runs the 3-recheck burst for one specific unintended pause. forId
+   pins this burst to the song that was playing when the pause happened
+   — if the track changes (or the burst is superseded by a newer one,
+   or the setting gets turned off, or the user acts) partway through,
+   later scheduled checks quietly no-op instead of interfering. */
+function beginMediaChangeRecheckBurst(forId){
+  const myToken = ++mediaChangeRecheckToken;
+  let attemptIndex = 0; // 0-based index into MEDIA_CHANGE_RECHECK_GAPS_MS
+  const tryNext = ()=>{
+    if(myToken !== mediaChangeRecheckToken) return; // superseded by a newer burst
+    if(state.currentId !== forId || !state.stopOnMediaChange || intentionalPause || !audio.paused){
+      // Already resolved some other way (new track, setting turned off,
+      // user acted, already playing again) — nothing left for this
+      // burst to do.
+      return;
+    }
+    const n = attemptIndex+1;
+    Log.info('Stop on media change: recheck '+n+' of '+MEDIA_CHANGE_RECHECK_GAPS_MS.length+' \u2014 is the device back yet? \u00b7 '+audioDiag());
+    pendingResumeReason = 'media-change recheck '+n+' of '+MEDIA_CHANGE_RECHECK_GAPS_MS.length+' (device reconnected)';
+    audio.play().catch(e=>{
+      pendingResumeReason = null; // rejected — no 'play' event will fire to consume this tag
+      attemptIndex++;
+      if(attemptIndex < MEDIA_CHANGE_RECHECK_GAPS_MS.length){
+        setTimeout(tryNext, MEDIA_CHANGE_RECHECK_GAPS_MS[attemptIndex]);
+      }else{
+        const totalMs = MEDIA_CHANGE_RECHECK_GAPS_MS.reduce((a,b)=>a+b,0);
+        respectMediaChangeStop('checked '+MEDIA_CHANGE_RECHECK_GAPS_MS.length+' times over '+totalMs+'ms, still not back');
+      }
+    });
+  };
+  setTimeout(tryNext, MEDIA_CHANGE_RECHECK_GAPS_MS[0]);
 }
 
 /* ---- External (MediaSession) play/pause gating ----
@@ -5509,15 +5499,20 @@ function onAppForeground(){
   // stop running JS until it's foregrounded again, so the original pause
   // event never gets a chance to log) would silently start playing again
   // the instant the app was reopened, with no button press — exactly the
-  // outcome the setting exists to prevent. Uses the same shared grace
-  // check as the pause handler (see withinMediaChangeGracePeriod): if
-  // the track had JUST started, still retry; otherwise respect the stop.
-  const respecting = state.stopOnMediaChange && !withinMediaChangeGracePeriod();
+  // outcome the setting exists to prevent.
+  //
+  // v3.7.0: simplified to just the setting itself, no separate grace
+  // check. The pause handler's own 3-recheck burst (20/60/100ms — see
+  // beginMediaChangeRecheckBurst) already resolves "was this transient"
+  // within a tenth of a second of the pause happening; by the time a
+  // human actually reopens the app, any pause still in effect has
+  // already been through that and deliberately settled, so there's
+  // nothing left here to second-guess.
+  const respecting = state.stopOnMediaChange;
   if(userWantsPlaying){
     Log.info('App foreground \u00b7 '+audioDiag()+(respecting ? ' \u2014 stop on media change is on, not auto-resuming' : ' \u2014 checking whether to resume'));
   }
   if(!respecting){
-    if(state.stopOnMediaChange) hiccupRetryCountForTrack++;
     if(userWantsPlaying && audio.paused && audio.src && !intentionalPause){
       pendingResumeReason = 'app returned to foreground';
       audio.play().catch(()=>{ pendingResumeReason = null; });

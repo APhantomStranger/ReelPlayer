@@ -3586,49 +3586,96 @@ audio.addEventListener('pause', ()=>{
    OUTPUT device actually disappeared — the specific, testable thing
    the setting exists to respond to. */
 let lastKnownOutputDevices = []; // [{deviceId, label, kind}] — audio outputs only
+let lastKnownAllDevices = [];    // all devices, for full diagnostic context
 async function snapshotOutputDevices(){
   try{
     const all = await navigator.mediaDevices.enumerateDevices();
-    return all.filter(d=>d.kind==='audiooutput').map(d=>({deviceId:d.deviceId, label:d.label||'(unlabeled)', kind:d.kind}));
+    lastKnownAllDevices = all.map(d=>({deviceId:d.deviceId, label:d.label||'(unlabeled)', kind:d.kind, groupId:d.groupId||''}));
+    return all.filter(d=>d.kind==='audiooutput').map(d=>({deviceId:d.deviceId, label:d.label||'(unlabeled)', kind:d.kind, groupId:d.groupId||''}));
   }catch(e){ return []; }
+}
+/* Classifies an output device label into a human-readable type.
+   Android Chrome labels are inconsistent across OEMs, but the patterns
+   are well-established enough to identify the category reliably. */
+function classifyOutput(label){
+  const l = (label||'').toLowerCase();
+  if(/bluetooth|bt\b|bth|a2dp|hfp/.test(l)) return 'bluetooth';
+  if(/usb|usb-c|usb audio/.test(l)) return 'USB';
+  if(/wired|headphone|headset|3\.5\s*mm|aux/.test(l)) return 'wired headphones';
+  if(/hdmi/.test(l)) return 'HDMI';
+  if(/speaker|built.?in|earpiece|default|communications/.test(l)) return 'speaker';
+  if(l==='(unlabeled)' || !l) return 'unknown';
+  return 'other ('+label+')';
+}
+/* Returns a concise, log-friendly summary of all current output devices
+   with their classified types — e.g. "BT Headphones [bluetooth], Default [speaker]" */
+function outputDeviceSummary(devices){
+  if(!devices || devices.length===0) return '(none)';
+  return devices.map(d=>(d.label||d.deviceId)+' ['+classifyOutput(d.label)+']').join(', ');
+}
+/* Returns just the active output type for inclusion in audioDiag —
+   uses audio.sinkId when available (Chrome 110+), otherwise infers
+   from the device list by which non-default outputs are present.
+   This is the "what media output is being used" field the user
+   specifically asked for in every log line. */
+function currentOutputType(){
+  try{
+    // audio.sinkId is '' for the default device, or a deviceId for an
+    // explicitly-set one. Most Android Chrome builds expose it.
+    if(typeof audio.sinkId === 'string' && audio.sinkId !== ''){
+      const match = lastKnownOutputDevices.find(d=>d.deviceId===audio.sinkId);
+      if(match) return classifyOutput(match.label);
+    }
+    // Fallback: infer from which non-default devices exist. On Android,
+    // when BT headphones are connected, the audio route goes there
+    // automatically — there's no explicit setSinkId call.
+    const types = lastKnownOutputDevices.map(d=>classifyOutput(d.label));
+    if(types.includes('bluetooth')) return 'bluetooth (inferred)';
+    if(types.includes('USB')) return 'USB (inferred)';
+    if(types.includes('wired headphones')) return 'wired headphones (inferred)';
+    if(types.includes('speaker')) return 'speaker';
+    return 'unknown';
+  }catch(e){ return 'unknown'; }
 }
 async function initDeviceSnapshot(){
   lastKnownOutputDevices = await snapshotOutputDevices();
-  Log.info('Audio outputs at boot: '+lastKnownOutputDevices.map(d=>d.label||d.deviceId).join(', ')+' ('+lastKnownOutputDevices.length+' total)');
+  const inputCount = lastKnownAllDevices.filter(d=>d.kind==='audioinput').length;
+  Log.info('Audio device inventory at boot:');
+  Log.info('  Outputs ('+lastKnownOutputDevices.length+'): '+outputDeviceSummary(lastKnownOutputDevices));
+  Log.info('  Inputs: '+inputCount+' audio input(s)');
+  Log.info('  Active output type: '+currentOutputType());
 }
 if(navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener==='function'){
   navigator.mediaDevices.addEventListener('devicechange', async ()=>{
     const before = lastKnownOutputDevices;
+    const beforeType = currentOutputType();
     const after = await snapshotOutputDevices();
     lastKnownOutputDevices = after;
+    const afterType = currentOutputType();
 
     const beforeIds = new Set(before.map(d=>d.deviceId));
     const afterIds = new Set(after.map(d=>d.deviceId));
     const added = after.filter(d=>!beforeIds.has(d.deviceId));
     const removed = before.filter(d=>!afterIds.has(d.deviceId));
 
-    const changeDesc = (removed.length ? 'removed: '+removed.map(d=>d.label||d.deviceId).join(', ')+'; ' : '')
-      + (added.length ? 'added: '+added.map(d=>d.label||d.deviceId).join(', ')+'; ' : '')
-      + (!removed.length && !added.length ? 'no visible output-device change (input-only or phantom event)' : '');
-    Log.info('Device change event \u2014 outputs: '+before.length+' \u2192 '+after.length+' \u2014 '+changeDesc+' \u00b7 '+audioDiag());
+    // Log everything — this is the granular device-change trace the user specifically asked for.
+    Log.info('=== DEVICE CHANGE EVENT ===');
+    Log.info('  Before: '+outputDeviceSummary(before)+' (active: '+beforeType+')');
+    Log.info('  After:  '+outputDeviceSummary(after)+' (active: '+afterType+')');
+    if(removed.length) Log.info('  Removed outputs: '+removed.map(d=>d.label+' ['+classifyOutput(d.label)+']').join(', '));
+    if(added.length) Log.info('  Added outputs: '+added.map(d=>d.label+' ['+classifyOutput(d.label)+']').join(', '));
+    if(!removed.length && !added.length) Log.info('  No output-device change detected (input-only, USB re-enumeration, or phantom event)');
+    Log.info('  Output type: '+beforeType+' \u2192 '+afterType+(beforeType===afterType ? ' (unchanged)' : ' (CHANGED)'));
+    Log.info('  Audio state: '+audioDiag());
 
     if(!state.stopOnMediaChange || audio.paused) return;
 
     if(removed.length === 0){
-      // No audio OUTPUT disappeared — this was an input-device change,
-      // a USB re-enumeration, or a phantom event. Pausing here is
-      // exactly the false positive the user identified: the app thinks
-      // the audio output changed when it didn't.
-      Log.info('Device change event: no audio output removed \u2014 NOT pausing (this would have been a false positive under the old blind listener)');
+      Log.info('  Decision: no audio output removed \u2014 NOT pausing (this would have been a false positive under the old blind listener)');
       return;
     }
 
-    // A real audio output device disappeared per the before/after
-    // snapshot above. Use the same device-list verification check as the
-    // native pause handler — it'll re-snapshot after a settle window and
-    // only respect the pause if the output is genuinely gone, not just
-    // briefly bouncing.
-    Log.info('Audio output device removed ("'+removed.map(d=>d.label||d.deviceId).join('", "')+'"): verifying after settle window');
+    Log.info('  Decision: audio output removed ("'+removed.map(d=>d.label+' ['+classifyOutput(d.label)+']').join('", "')+'"): verifying after settle window');
     checkOutputAndDecide(state.currentId);
   });
 }
@@ -3674,9 +3721,11 @@ function audioDiag(){
     const err = audio.error ? (audio.error.code+':'+(MEDIA_ERROR_NAMES[audio.error.code]||'unknown')) : 'none';
     let vis = 'n/a';
     try{ vis = document.visibilityState; }catch(e){}
+    const out = currentOutputType();
     return 'ready='+audio.readyState+'('+(READY_STATE_NAMES[audio.readyState]||'?')+')'
       +' net='+audio.networkState+'('+(NETWORK_STATE_NAMES[audio.networkState]||'?')+')'
       +' paused='+audio.paused+' ended='+audio.ended+' vis='+vis
+      +' out='+out
       +' t='+t+'/'+dStr+' buf='+buf+' err='+err;
   }catch(e){ return 'diag-failed:'+(e&&e.message?e.message:e); }
 }
@@ -3738,32 +3787,45 @@ function respectMediaChangeStop(reason){
    rather than guessing based on play() success. */
 async function checkOutputAndDecide(forId){
   const myToken = ++mediaChangeCheckToken;
+  const typeAtPause = currentOutputType();
   // Snapshot right now — what outputs exist at the moment of the pause.
   const atPause = await snapshotOutputDevices();
   const atPauseIds = new Set(atPause.map(d=>d.deviceId));
-  Log.info('Stop on media change: checking output devices \u2014 '+atPause.length+' output(s) at pause: '+atPause.map(d=>d.label||d.deviceId).join(', '));
+  Log.info('=== MEDIA CHANGE CHECK START ===');
+  Log.info('  Trigger: unintended pause on "'+((state.library.get(forId)||{}).title||forId)+'"');
+  Log.info('  Output at pause: '+outputDeviceSummary(atPause)+' ('+atPause.length+' device(s))');
+  Log.info('  Active output type at pause: '+typeAtPause);
+  Log.info('  Waiting '+MEDIA_CHANGE_SETTLE_MS+'ms for transients to settle\u2026');
   // Wait for transients to settle. A BT route renegotiation or a USB
   // re-enumeration blip typically resolves well within this window.
   await new Promise(r=>setTimeout(r, MEDIA_CHANGE_SETTLE_MS));
   // Bail if anything else resolved this pause while we were waiting.
-  if(myToken !== mediaChangeCheckToken) return;
-  if(state.currentId !== forId || !state.stopOnMediaChange || intentionalPause || !audio.paused) return;
+  if(myToken !== mediaChangeCheckToken){ Log.info('  Check abandoned: superseded by a newer check'); return; }
+  if(state.currentId !== forId){ Log.info('  Check abandoned: track changed during settle window'); return; }
+  if(!state.stopOnMediaChange){ Log.info('  Check abandoned: setting was turned off during settle window'); return; }
+  if(intentionalPause){ Log.info('  Check abandoned: user paused intentionally during settle window'); return; }
+  if(!audio.paused){ Log.info('  Check abandoned: audio already playing again (something else resumed it)'); return; }
   // Re-snapshot — what outputs exist NOW, after the settle window.
   const afterSettle = await snapshotOutputDevices();
   const afterIds = new Set(afterSettle.map(d=>d.deviceId));
+  const typeAfterSettle = currentOutputType();
   const disappeared = atPause.filter(d=>!afterIds.has(d.deviceId));
   const appeared = afterSettle.filter(d=>!atPauseIds.has(d.deviceId));
-  const changeDesc = 'outputs: '+atPause.length+' \u2192 '+afterSettle.length
-    + (disappeared.length ? ' | removed: '+disappeared.map(d=>d.label||d.deviceId).join(', ') : '')
-    + (appeared.length ? ' | added: '+appeared.map(d=>d.label||d.deviceId).join(', ') : '');
-  Log.info('Stop on media change: after '+MEDIA_CHANGE_SETTLE_MS+'ms settle \u2014 '+changeDesc);
+  Log.info('  Output after settle: '+outputDeviceSummary(afterSettle)+' ('+afterSettle.length+' device(s))');
+  Log.info('  Active output type after settle: '+typeAfterSettle);
+  if(disappeared.length) Log.info('  Devices that LEFT: '+disappeared.map(d=>d.label+' ['+classifyOutput(d.label)+']').join(', '));
+  if(appeared.length) Log.info('  Devices that ARRIVED: '+appeared.map(d=>d.label+' ['+classifyOutput(d.label)+']').join(', '));
+  if(!disappeared.length && !appeared.length) Log.info('  Device list: IDENTICAL before and after settle');
+  Log.info('  Output type change: '+typeAtPause+' \u2192 '+typeAfterSettle+(typeAtPause===typeAfterSettle ? ' (SAME)' : ' (DIFFERENT)'));
   if(disappeared.length === 0){
     // The output-device list is stable — nothing actually left. This
     // pause was NOT a real media-output change. Resume.
-    Log.info('Stop on media change: output devices unchanged \u2014 this was NOT a real output change, resuming');
+    Log.info('  \u2714 DECISION: NO output device removed \u2014 this was NOT a real output change');
+    Log.info('  \u2714 ACTION: resuming playback');
+    Log.info('=== MEDIA CHANGE CHECK END (resuming) ===');
     pendingResumeReason = 'output devices verified unchanged after '+MEDIA_CHANGE_SETTLE_MS+'ms settle (not a real media change)';
     audio.play().then(()=>{
-      Log.info('Resumed after verifying output devices are stable');
+      Log.info('Resumed successfully after verifying output devices are stable \u00b7 out='+currentOutputType());
     }).catch(e=>{
       pendingResumeReason = null;
       Log.warn('Resume after device-check failed: '+(e&&e.name?e.name:String(e))+' \u2014 scheduling retries \u00b7 '+audioDiag());
@@ -3771,7 +3833,10 @@ async function checkOutputAndDecide(forId){
     });
   }else{
     // A real output device genuinely disappeared. Respect the pause.
-    respectMediaChangeStop('output device removed ("'+disappeared.map(d=>d.label||d.deviceId).join('", "')+'") \u2014 confirmed gone after '+MEDIA_CHANGE_SETTLE_MS+'ms');
+    Log.info('  \u2718 DECISION: output device REMOVED ("'+disappeared.map(d=>d.label+' ['+classifyOutput(d.label)+']').join('", "')+'")\u2014 confirmed gone');
+    Log.info('  \u2718 ACTION: respecting the pause, NOT resuming');
+    Log.info('=== MEDIA CHANGE CHECK END (staying paused) ===');
+    respectMediaChangeStop('output device removed ("'+disappeared.map(d=>d.label+' ['+classifyOutput(d.label)+']').join('", "')+'") \u2014 confirmed gone after '+MEDIA_CHANGE_SETTLE_MS+'ms');
   }
 }
 

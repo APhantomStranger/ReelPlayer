@@ -1348,8 +1348,13 @@ const state = {
   stopOnMediaChange: false, // when true, an output-device-change pause is respected instead of auto-resumed
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.7.1';
+const APP_VERSION = '3.7.2';
 const CHANGELOG = [
+  { v:'3.7.2', date:'Sep 12, 2026', items:[
+    'Fundamentally different approach to "Stop on media change": instead of trying audio.play() as a proxy for "is the output device still there" (play() can fail for unrelated reasons like audio focus not being restored yet, producing false negatives), the app now directly checks whether the output device actually disappeared. On every unintended pause, it snapshots the audio-output device list immediately, waits 150ms for transients to settle (bluetooth renegotiation, USB re-enumeration), then re-snapshots and compares. If no output device actually left \u2192 this was a hiccup, resume. If a device is genuinely gone \u2192 respect the pause.',
+    'This is the first version that tests the actual question ("did the output change?") rather than a proxy for it. Every previous approach was indirect: track-start timing was a guess about what pauses were "probably" hiccups, play() success tested "will Chrome let me play right now" (a different question), and the retry-count cap was treating symptoms of the proxy failing rather than replacing the proxy itself.',
+    'The device list at boot and every change event are logged with specific output-device names, so the next time any pause happens, the log will show exactly what outputs existed at the moment of the pause and what existed 150ms later \u2014 not an interpretation, the actual data.',
+  ]},
   { v:'3.7.1', date:'Sep 11, 2026', items:[
     'Found a likely primary source of false "media change" pauses: the devicechange listener was pausing blindly on ANY device-enumeration event, not just actual audio-output changes. devicechange fires for microphone access (notification sounds, Google Assistant briefly listening), USB descriptor re-polling, background apps touching audio hardware, and other events that have nothing to do with headphones disconnecting. Every one of those was immediately pausing playback with no recheck. This happened on both bluetooth AND wired USB \u2014 consistent with the report \u2014 because devicechange is not connection-type-specific.',
     'Fixed: the listener now snapshots the actual device list before and after every devicechange event using enumerateDevices(), compares only audio OUTPUT devices, and only acts if one actually disappeared. Input-only changes, USB re-enumerations with no output-device loss, and phantom events with no visible device change at all are now explicitly ignored (and logged as such, so you can see exactly when this would have been a false positive under the old code). When a real output device does disappear, it now feeds into the same 3-recheck burst as the native-pause path rather than pausing immediately.',
@@ -3294,9 +3299,8 @@ function nextTrack(auto){
   if(state.queue.length===0) return;
   if(state.repeat==='one' && auto){
     // (v3.6.2 fixed a bug here where this restart never reset the old
-    // per-track retry-cap state, letting an exhausted budget leak across
-    // loops. v3.7.0 removed that whole state system — see
-    // beginMediaChangeRecheckBurst — so there's nothing left to reset.)
+    // per-track retry-cap state. That whole system was later replaced
+    // by checkOutputAndDecide (v3.7.2) — nothing left to reset.)
     audio.currentTime=0;
     pendingResumeReason='repeat-one restart from beginning';
     audio.play();
@@ -3554,13 +3558,9 @@ audio.addEventListener('pause', ()=>{
   logPaused('external/unintended \u2014 "'+(s?s.title:'?')+'" \u2014 '+since);
 
   if(state.stopOnMediaChange){
-    // v3.7.0 redesign: rather than deciding once, immediately, based on
-    // how long the TRACK had been playing (a proxy that produced real,
-    // confusing edge cases — see the v3.6.2 repeat-one bug and the
-    // "88ms since play started / retried 5 times already" mismatch),
-    // give the device itself a moment to reconnect before committing to
-    // a visible "stopped" state. See beginMediaChangeRecheckBurst.
-    beginMediaChangeRecheckBurst(state.currentId);
+    // v3.7.2: directly check whether the output device actually changed,
+    // rather than using play() success as a proxy. See checkOutputAndDecide.
+    checkOutputAndDecide(state.currentId);
     return;
   }
 
@@ -3623,11 +3623,13 @@ if(navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener==='f
       return;
     }
 
-    // A real audio output device disappeared. Run the same recheck
-    // burst instead of pausing immediately, since the OS often
-    // reconnects a device within milliseconds (BT route-switch).
-    Log.info('Audio output device removed ("'+removed.map(d=>d.label||d.deviceId).join('", "')+'"): starting recheck burst');
-    beginMediaChangeRecheckBurst(state.currentId);
+    // A real audio output device disappeared per the before/after
+    // snapshot above. Use the same device-list verification check as the
+    // native pause handler — it'll re-snapshot after a settle window and
+    // only respect the pause if the output is genuinely gone, not just
+    // briefly bouncing.
+    Log.info('Audio output device removed ("'+removed.map(d=>d.label||d.deviceId).join('", "')+'"): verifying after settle window');
+    checkOutputAndDecide(state.currentId);
   });
 }
 audio.addEventListener('timeupdate', updateProgress);
@@ -3701,24 +3703,26 @@ let lastPlayEventAt = 0;
    the stop actually respected. This directly tests the thing that
    matters (is the device back yet), not a proxy for it, and needs no
    per-track state that could leak across tracks/loops at all. */
-const MEDIA_CHANGE_RECHECK_GAPS_MS = [20, 40, 40]; // successive gaps; cumulative 20ms, 60ms, 100ms after the pause
-let mediaChangeRecheckToken = 0; // a newer burst (or a track/setting change) invalidates an older in-flight one
+/* v3.7.2 redesign: instead of using audio.play() success/failure as a
+   proxy for "is the output device still there" (play() can fail for
+   unrelated reasons like audio focus), directly check the device list.
+   Snapshot outputs at the moment of the pause, wait 150ms for transients
+   to settle, re-snapshot, compare: did any output actually disappear?
+   If unchanged → resume (it was a hiccup, not a real change).
+   If a device is genuinely gone → respect the pause. */
+const MEDIA_CHANGE_SETTLE_MS = 150;
+let mediaChangeCheckToken = 0;
 /* Set true whenever the pause handler deliberately respects a stop
-   (all three rechecks failed, or "Stop on media change" was already off
-   when a NEW check would have fired — see below), cleared the moment
-   any resume the app actually recognizes happens.
+   (a real output device confirmed gone after the settle window),
+   cleared the moment any resume the app actually recognizes happens.
    Confirmed from a real device log (v3.6.3): playback resumed 82
    seconds after a respected stop, with NONE of this app's own tagged
-   resume paths firing — no MediaSession action, no app-foreground
-   check, no button press, nothing scheduleResumeRetries would produce.
-   Every real audio.play() call site in this file is tagged (see
-   pendingResumeReason below); an untagged 'play' event reaching this
-   flag set means something OUTSIDE this page's own JS resumed the
-   underlying media element directly — most likely Chrome or Android's
-   own audio-focus-recovery machinery, which operates beneath the
-   MediaSession action-handler API this app can actually listen to.
-   That can't be intercepted at the source, so instead: if it happens
-   while a stop was deliberately in effect, immediately reverse it. */
+   resume paths firing. Every real audio.play() call site in this file
+   is tagged; an untagged 'play' event reaching this flag set means
+   something OUTSIDE this page's own JS resumed the underlying media
+   element directly. That can't be intercepted at the source, so
+   instead: if it happens while a stop was deliberately in effect,
+   immediately reverse it. */
 let respectedStopActive = false;
 function respectMediaChangeStop(reason){
   Log.info('Stop on media change: '+reason+' \u2014 leaving playback paused, not attempting to resume');
@@ -3729,37 +3733,46 @@ function respectMediaChangeStop(reason){
   $('player').classList.add('paused');
   markPlayingRows();
 }
-/* Runs the 3-recheck burst for one specific unintended pause. forId
-   pins this burst to the song that was playing when the pause happened
-   — if the track changes (or the burst is superseded by a newer one,
-   or the setting gets turned off, or the user acts) partway through,
-   later scheduled checks quietly no-op instead of interfering. */
-function beginMediaChangeRecheckBurst(forId){
-  const myToken = ++mediaChangeRecheckToken;
-  let attemptIndex = 0; // 0-based index into MEDIA_CHANGE_RECHECK_GAPS_MS
-  const tryNext = ()=>{
-    if(myToken !== mediaChangeRecheckToken) return; // superseded by a newer burst
-    if(state.currentId !== forId || !state.stopOnMediaChange || intentionalPause || !audio.paused){
-      // Already resolved some other way (new track, setting turned off,
-      // user acted, already playing again) — nothing left for this
-      // burst to do.
-      return;
-    }
-    const n = attemptIndex+1;
-    Log.info('Stop on media change: recheck '+n+' of '+MEDIA_CHANGE_RECHECK_GAPS_MS.length+' \u2014 is the device back yet? \u00b7 '+audioDiag());
-    pendingResumeReason = 'media-change recheck '+n+' of '+MEDIA_CHANGE_RECHECK_GAPS_MS.length+' (device reconnected)';
-    audio.play().catch(e=>{
-      pendingResumeReason = null; // rejected — no 'play' event will fire to consume this tag
-      attemptIndex++;
-      if(attemptIndex < MEDIA_CHANGE_RECHECK_GAPS_MS.length){
-        setTimeout(tryNext, MEDIA_CHANGE_RECHECK_GAPS_MS[attemptIndex]);
-      }else{
-        const totalMs = MEDIA_CHANGE_RECHECK_GAPS_MS.reduce((a,b)=>a+b,0);
-        respectMediaChangeStop('checked '+MEDIA_CHANGE_RECHECK_GAPS_MS.length+' times over '+totalMs+'ms, still not back');
-      }
+/* The core decision: when an unintended pause arrives with "Stop on
+   media change" on, check whether the output device ACTUALLY changed
+   rather than guessing based on play() success. */
+async function checkOutputAndDecide(forId){
+  const myToken = ++mediaChangeCheckToken;
+  // Snapshot right now — what outputs exist at the moment of the pause.
+  const atPause = await snapshotOutputDevices();
+  const atPauseIds = new Set(atPause.map(d=>d.deviceId));
+  Log.info('Stop on media change: checking output devices \u2014 '+atPause.length+' output(s) at pause: '+atPause.map(d=>d.label||d.deviceId).join(', '));
+  // Wait for transients to settle. A BT route renegotiation or a USB
+  // re-enumeration blip typically resolves well within this window.
+  await new Promise(r=>setTimeout(r, MEDIA_CHANGE_SETTLE_MS));
+  // Bail if anything else resolved this pause while we were waiting.
+  if(myToken !== mediaChangeCheckToken) return;
+  if(state.currentId !== forId || !state.stopOnMediaChange || intentionalPause || !audio.paused) return;
+  // Re-snapshot — what outputs exist NOW, after the settle window.
+  const afterSettle = await snapshotOutputDevices();
+  const afterIds = new Set(afterSettle.map(d=>d.deviceId));
+  const disappeared = atPause.filter(d=>!afterIds.has(d.deviceId));
+  const appeared = afterSettle.filter(d=>!atPauseIds.has(d.deviceId));
+  const changeDesc = 'outputs: '+atPause.length+' \u2192 '+afterSettle.length
+    + (disappeared.length ? ' | removed: '+disappeared.map(d=>d.label||d.deviceId).join(', ') : '')
+    + (appeared.length ? ' | added: '+appeared.map(d=>d.label||d.deviceId).join(', ') : '');
+  Log.info('Stop on media change: after '+MEDIA_CHANGE_SETTLE_MS+'ms settle \u2014 '+changeDesc);
+  if(disappeared.length === 0){
+    // The output-device list is stable — nothing actually left. This
+    // pause was NOT a real media-output change. Resume.
+    Log.info('Stop on media change: output devices unchanged \u2014 this was NOT a real output change, resuming');
+    pendingResumeReason = 'output devices verified unchanged after '+MEDIA_CHANGE_SETTLE_MS+'ms settle (not a real media change)';
+    audio.play().then(()=>{
+      Log.info('Resumed after verifying output devices are stable');
+    }).catch(e=>{
+      pendingResumeReason = null;
+      Log.warn('Resume after device-check failed: '+(e&&e.name?e.name:String(e))+' \u2014 scheduling retries \u00b7 '+audioDiag());
+      scheduleResumeRetries('after device-stable verification');
     });
-  };
-  setTimeout(tryNext, MEDIA_CHANGE_RECHECK_GAPS_MS[0]);
+  }else{
+    // A real output device genuinely disappeared. Respect the pause.
+    respectMediaChangeStop('output device removed ("'+disappeared.map(d=>d.label||d.deviceId).join('", "')+'") \u2014 confirmed gone after '+MEDIA_CHANGE_SETTLE_MS+'ms');
+  }
 }
 
 /* ---- External (MediaSession) play/pause gating ----
@@ -5537,13 +5550,11 @@ function onAppForeground(){
   // the instant the app was reopened, with no button press — exactly the
   // outcome the setting exists to prevent.
   //
-  // v3.7.0: simplified to just the setting itself, no separate grace
-  // check. The pause handler's own 3-recheck burst (20/60/100ms — see
-  // beginMediaChangeRecheckBurst) already resolves "was this transient"
-  // within a tenth of a second of the pause happening; by the time a
-  // human actually reopens the app, any pause still in effect has
-  // already been through that and deliberately settled, so there's
-  // nothing left here to second-guess.
+  // v3.7.2: simplified to just the setting itself. The pause handler's
+  // own device-list check (checkOutputAndDecide) already resolves "was
+  // this a real output change" within ~150ms of the pause happening;
+  // by the time a human actually reopens the app, any pause still in
+  // effect has already been through that and deliberately settled.
   const respecting = state.stopOnMediaChange;
   if(userWantsPlaying){
     Log.info('App foreground \u00b7 '+audioDiag()+(respecting ? ' \u2014 stop on media change is on, not auto-resuming' : ' \u2014 checking whether to resume'));

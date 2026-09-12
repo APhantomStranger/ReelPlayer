@@ -1348,8 +1348,13 @@ const state = {
   stopOnMediaChange: false, // when true, an output-device-change pause is respected instead of auto-resumed
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.7.0';
+const APP_VERSION = '3.7.1';
 const CHANGELOG = [
+  { v:'3.7.1', date:'Sep 11, 2026', items:[
+    'Found a likely primary source of false "media change" pauses: the devicechange listener was pausing blindly on ANY device-enumeration event, not just actual audio-output changes. devicechange fires for microphone access (notification sounds, Google Assistant briefly listening), USB descriptor re-polling, background apps touching audio hardware, and other events that have nothing to do with headphones disconnecting. Every one of those was immediately pausing playback with no recheck. This happened on both bluetooth AND wired USB \u2014 consistent with the report \u2014 because devicechange is not connection-type-specific.',
+    'Fixed: the listener now snapshots the actual device list before and after every devicechange event using enumerateDevices(), compares only audio OUTPUT devices, and only acts if one actually disappeared. Input-only changes, USB re-enumerations with no output-device loss, and phantom events with no visible device change at all are now explicitly ignored (and logged as such, so you can see exactly when this would have been a false positive under the old code). When a real output device does disappear, it now feeds into the same 3-recheck burst as the native-pause path rather than pausing immediately.',
+    'Also added: device-list snapshots at boot (so you can see what outputs the app started with) and on every devicechange event (so you can see exactly what came and went). Every ignored event logs "no audio output removed \u2014 NOT pausing" so the next time something pauses unexpectedly, you can check whether a devicechange event fired and what it actually contained \u2014 rather than it being invisible.',
+  ]},
   { v:'3.7.0', date:'Sep 11, 2026', items:[
     'Redesigned how "Stop on media change" decides whether to fight a pause or respect it, per direct request. The old system anchored its decision to how long the TRACK had been playing (a grace period since track-start, with a per-track retry-count cap) \u2014 a proxy that produced real, confusing bugs: repeat-one never reset it (v3.6.2), and a burst of rapid pauses could show "retried 5 times already" after what looked like almost no time at all. That whole system is gone.',
     'In its place: every unintended pause now gets three quick rechecks \u2014 20ms, then 60ms, then 100ms after the pause \u2014 actually attempting to resume each time, before committing to a visible "stopped" state. This tests the thing that actually matters (is the device back yet) instead of a stand-in for it, applies identically no matter when in a track the pause happens, and needs no per-track state that could leak between tracks or loops. Any successful recheck immediately continues playback, logged the normal way; only if all three genuinely fail is the stop respected.',
@@ -3571,28 +3576,58 @@ audio.addEventListener('pause', ()=>{
   });
 });
 
-/* Secondary signal for "Stop on media change": navigator.mediaDevices
-   fires 'devicechange' when the set of audio devices changes (a
-   bluetooth headset connecting/disconnecting, USB audio arriving or
-   going away). This is best-effort — on Android Chrome its reliability
-   for BLUETOOTH-specific output changes varies by device/OS version, so
-   the primary mechanism for this feature is actually the "unintended
-   pause" branch above: Android already pauses media playback itself
-   when an output device disappears (the same behavior that stops any
-   well-behaved app from suddenly playing through the phone speaker),
-   which surfaces as exactly that pause event. This listener catches the
-   rarer case where the device list changes without the OS pausing
-   anything on its own. Guarded on !audio.paused so it never calls
-   requestPause() on an already-paused element — doing so would still
-   set intentionalPause=true with no corresponding real pause event to
-   consume it, corrupting the flag for a later, unrelated pause. */
+/* ---- Device-change monitoring ----
+   v3.7.0 instrumentation: the old listener blindly paused on ANY
+   devicechange event, which fires for microphone access, USB
+   re-enumeration, background apps touching audio hardware, and other
+   things that have nothing to do with the user's headphones actually
+   disconnecting. This version snapshots the device list before and
+   after, logs exactly what changed, and only pauses if a real audio
+   OUTPUT device actually disappeared — the specific, testable thing
+   the setting exists to respond to. */
+let lastKnownOutputDevices = []; // [{deviceId, label, kind}] — audio outputs only
+async function snapshotOutputDevices(){
+  try{
+    const all = await navigator.mediaDevices.enumerateDevices();
+    return all.filter(d=>d.kind==='audiooutput').map(d=>({deviceId:d.deviceId, label:d.label||'(unlabeled)', kind:d.kind}));
+  }catch(e){ return []; }
+}
+async function initDeviceSnapshot(){
+  lastKnownOutputDevices = await snapshotOutputDevices();
+  Log.info('Audio outputs at boot: '+lastKnownOutputDevices.map(d=>d.label||d.deviceId).join(', ')+' ('+lastKnownOutputDevices.length+' total)');
+}
 if(navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener==='function'){
-  navigator.mediaDevices.addEventListener('devicechange', ()=>{
-    Log.info('Audio device list changed \u00b7 '+audioDiag());
-    if(state.stopOnMediaChange && !audio.paused){
-      Log.info('Stop on media change is on \u2014 pausing due to device change');
-      requestPause('audio device list changed (bluetooth/USB connect or disconnect)');
+  navigator.mediaDevices.addEventListener('devicechange', async ()=>{
+    const before = lastKnownOutputDevices;
+    const after = await snapshotOutputDevices();
+    lastKnownOutputDevices = after;
+
+    const beforeIds = new Set(before.map(d=>d.deviceId));
+    const afterIds = new Set(after.map(d=>d.deviceId));
+    const added = after.filter(d=>!beforeIds.has(d.deviceId));
+    const removed = before.filter(d=>!afterIds.has(d.deviceId));
+
+    const changeDesc = (removed.length ? 'removed: '+removed.map(d=>d.label||d.deviceId).join(', ')+'; ' : '')
+      + (added.length ? 'added: '+added.map(d=>d.label||d.deviceId).join(', ')+'; ' : '')
+      + (!removed.length && !added.length ? 'no visible output-device change (input-only or phantom event)' : '');
+    Log.info('Device change event \u2014 outputs: '+before.length+' \u2192 '+after.length+' \u2014 '+changeDesc+' \u00b7 '+audioDiag());
+
+    if(!state.stopOnMediaChange || audio.paused) return;
+
+    if(removed.length === 0){
+      // No audio OUTPUT disappeared — this was an input-device change,
+      // a USB re-enumeration, or a phantom event. Pausing here is
+      // exactly the false positive the user identified: the app thinks
+      // the audio output changed when it didn't.
+      Log.info('Device change event: no audio output removed \u2014 NOT pausing (this would have been a false positive under the old blind listener)');
+      return;
     }
+
+    // A real audio output device disappeared. Run the same recheck
+    // burst instead of pausing immediately, since the OS often
+    // reconnects a device within milliseconds (BT route-switch).
+    Log.info('Audio output device removed ("'+removed.map(d=>d.label||d.deviceId).join('", "')+'"): starting recheck burst');
+    beginMediaChangeRecheckBurst(state.currentId);
   });
 }
 audio.addEventListener('timeupdate', updateProgress);
@@ -5365,6 +5400,7 @@ async function boot(){
   Log.info('Reel v'+APP_VERSION+' booting — '+navigator.userAgent);
   Log.info('MediaSession API available: '+('mediaSession' in navigator)+' (lock screen controls need this to be true)');
   registerServiceWorker();
+  initDeviceSnapshot();
   wire();
   setCapabilityNote();
   // load prefs

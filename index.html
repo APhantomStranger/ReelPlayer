@@ -1346,10 +1346,28 @@ const state = {
   unplayableSelected: new Set(), // ids currently marked for removal in the open view
   // ---- media-change behavior ----
   stopOnMediaChange: false, // when true, an output-device-change pause is respected instead of auto-resumed
+  // ---- audio route diagnostics (v3.7.4, opt-in) ----
+  routeDiag: false,         // when true, measure AudioContext.outputLatency to detect real route changes
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.7.2';
+const APP_VERSION = '3.7.4';
 const CHANGELOG = [
+  { v:'3.7.4', date:'Sep 14, 2026', items:[
+    'Diagnostic build \u2014 no change to what "Stop on media change" actually decides. Adds a new, completely different signal for detecting a real output-route change, so the next debug log can show whether it works on this specific phone before any behavior is built on top of it.',
+    'Background, established from documentation rather than guesswork: native Android apps don\u2019t detect a headphone/Bluetooth disconnect at all \u2014 the OS broadcasts ACTION_AUDIO_BECOMING_NOISY directly to them the moment audio is about to reroute to the speaker. That single, unambiguous signal is why other players on the same phone reliably stop on a real disconnect without ever pausing at random. There is no web equivalent, which is the actual root reason this has been hard here and not there.',
+    'Also confirmed why the v3.7.2 device-list approach was structurally dead on arrival, not just unlucky: Chrome only returns an exhaustive device list when the microphone permission has been granted \u2014 without it, enumerateDevices() returns default devices only, with no labels. That is exactly the single permanently-unlabeled "(unknown)" output this app has been seeing. Chromium discussion also notes the devicechange event does not fire at all without that permission.',
+    'The new signal being tested: AudioContext.outputLatency, which reflects the actual audio hardware route and needs no permission of any kind. Published measurements put Bluetooth around 0.178s versus roughly 0.025s for a built-in speaker \u2014 about a 7x difference, which would be trivially distinguishable if it holds up here. Supported since Chrome 102.',
+    'Turn on Settings \u2192 Advanced \u2192 "Audio route diagnostics" to enable it. Off by default, deliberately: it opens its own (silent, disconnected) audio context to take the measurement, and while that shouldn\u2019t disturb playback, that\u2019s an assumption rather than something verified on this phone \u2014 so it stays opt-in until it is. If the equaliser happens to be on, its existing audio graph is measured instead, which is a more accurate reading since that one is genuinely carrying the playback audio.',
+    'While enabled, the route is sampled once a second during playback and logged whenever the latency moves meaningfully, so the exact moment of a route change is captured even if nothing pauses. The full route reading is also attached to every pause, both sides of the media-change settle window, every device-change event, and boot.',
+    'What to do with it: enable the toggle, play a song through Bluetooth, let it run well past the 2-second mark, then turn Bluetooth off. Then Settings \u2192 Advanced \u2192 Debug log \u2192 Save. If the latency number visibly drops at that moment, mid-track detection can be rebuilt on it properly. If it doesn\u2019t move, this approach is dead too and the fallback is an explicit opt-in microphone-permission unlock for the real device list.',
+  ]},
+  { v:'3.7.3', date:'Sep 13, 2026', items:[
+    'Found the real reason "Stop on media change" stopped stopping anything, from a real device log: the v3.7.2 device-list check (enumerateDevices) reports exactly one permanently unlabeled "(unknown)" audio output on this hardware, before AND after a genuine Bluetooth-off or cable-unplug — Android Chrome\u2019s audiooutput enumeration doesn\u2019t reliably track real hardware routing changes the way desktop Chrome\u2019s does, and without an active microphone permission (which this app has no reason to ever request) labels come back blank regardless. So "no device disappeared" was never real evidence of anything on this phone \u2014 it said that unconditionally, so the app always concluded "not a real change" and always resumed.',
+    'The earlier v3.7.0 approach (testing whether audio.play() succeeds) doesn\u2019t work either, and the same log proves it directly: the resume attempt SUCCEEDED after what was, by report, a genuine Bluetooth-off event \u2014 Android\u2019s auto-pause on a route change is only a courtesy pause, it doesn\u2019t block a follow-up play() call, which just starts playing through the phone speaker instead. Neither signal available to this app can honestly tell "same device, brief hiccup" apart from "different device now," and getting that wrong in the resume direction means audio actually starts playing through the wrong output while driving, which is worse than staying paused.',
+    'So the decision now defaults to the safe side: outside the narrow startup-hiccup window below, ANY unintended pause while "Stop on media change" is on is simply respected, full stop, with no automatic verification-based resume attempt. The device-list snapshot is still taken and logged for diagnostic value \u2014 it costs nothing, and a confirmed device removal is still called out distinctly \u2014 but it no longer decides whether to resume.',
+    'Reintroduced a narrow, timing-only exception for the genuine startup-hiccup case first identified in v3.5.7: a pause landing within 2 seconds of the current track (or chapter, or a repeat-one restart) actually starting gets retried, since this doesn\u2019t require knowing which device the pause happened on \u2014 only when in the track it happened, which real device logs have repeatedly shown correlates with a brief same-device Bluetooth renegotiation blip rather than a real disconnect. Anchored to the fixed moment the track started (not to the most recent successful resume) and capped at 5 attempts per track, so a rapidly flapping connection during this window still can\u2019t retry indefinitely \u2014 the exact bug v3.5.10 fixed in the old version of this mechanism.',
+    'Net effect: a genuine mid-listening Bluetooth disconnect or cable unplug now reliably stays stopped. The tradeoff is that a genuine same-device hiccup happening more than 2 seconds into a track (rare, but possible) will now also stay stopped rather than auto-recovering, needing a manual tap to resume \u2014 accepted deliberately, since nothing available can safely tell that case apart from a real disconnect without risking the far worse outcome of resuming onto the wrong output.',
+  ]},
   { v:'3.7.2', date:'Sep 12, 2026', items:[
     'Fundamentally different approach to "Stop on media change": instead of trying audio.play() as a proxy for "is the output device still there" (play() can fail for unrelated reasons like audio focus not being restored yet, producing false negatives), the app now directly checks whether the output device actually disappeared. On every unintended pause, it snapshots the audio-output device list immediately, waits 150ms for transients to settle (bluetooth renegotiation, USB re-enumeration), then re-snapshots and compares. If no output device actually left \u2192 this was a hiccup, resume. If a device is genuinely gone \u2192 respect the pause.',
     'This is the first version that tests the actual question ("did the output change?") rather than a proxy for it. Every previous approach was indirect: track-start timing was a guess about what pauses were "probably" hiccups, play() success tested "will Chrome let me play right now" (a different question), and the retry-count cap was treating symptoms of the proxy failing rather than replacing the proxy itself.',
@@ -3249,6 +3267,7 @@ async function playSong(id){
   pushRecent(id);
   const loadStart = Date.now();
   try{
+    markFreshTrackStart();
     pendingResumeReason = FRESH_TRACK_START;
     await audio.play();
     state.playing = true;
@@ -3302,6 +3321,7 @@ function nextTrack(auto){
     // per-track retry-cap state. That whole system was later replaced
     // by checkOutputAndDecide (v3.7.2) — nothing left to reset.)
     audio.currentTime=0;
+    markFreshTrackStart();
     pendingResumeReason='repeat-one restart from beginning';
     audio.play();
     return;
@@ -3428,6 +3448,34 @@ function requestPause(reason){
   try{ audio.pause(); }catch(e){}
 }
 
+/* Startup-hiccup exception (reintroduced in v3.7.3 — see the comment on
+   checkOutputAndDecide below for why this is needed again): a pause
+   landing within this many ms of the CURRENT track/chapter genuinely
+   STARTING (a fresh load, or a repeat-one restart — never a generic
+   resume; see markFreshTrackStart) gets retried a few times before
+   falling through to the normal decision. This is narrow and
+   timing-only — it doesn't try to identify which device a pause
+   happened on, since nothing available on this platform can reliably
+   answer that (see below). It exists because real device logs (v3.5.7,
+   v3.5.10) showed Android/Bluetooth frequently produce a brief
+   route-renegotiation pause in the first couple of seconds after a NEW
+   playback session starts, on the SAME still-connected device, that
+   clears on its own within a few hundred ms — a different situation
+   from a genuine mid-listening disconnect. Anchored to the fixed moment
+   the track started (not to the most recent successful resume) and
+   capped at a small number of attempts, specifically so a rapidly
+   flapping connection during this window can't retry indefinitely —
+   v3.5.10 fixed a real bug where the old, resettable version of this
+   did exactly that (~190 cycles in under 20 seconds on one real track). */
+const STARTUP_HICCUP_WINDOW_MS = 2000;
+const STARTUP_HICCUP_MAX_RETRIES = 5;
+let currentTrackStartedAt = 0;
+let hiccupRetryCount = 0;
+function markFreshTrackStart(){
+  currentTrackStartedAt = Date.now();
+  hiccupRetryCount = 0;
+}
+
 /* Retries a resume attempt a handful of times over several seconds.
    Originally this only ran from onAppForeground (returning to the app),
    which left a real gap: if playback gets paused by something OUTSIDE
@@ -3441,7 +3489,12 @@ function requestPause(reason){
    shared by both call sites, so ANY unintended pause gets several
    follow-up attempts, not just ones tied to the app losing and regaining
    visibility. Bounded (a fixed few attempts, not indefinite) and gated on
-   userWantsPlaying, so it stops as soon as the user genuinely pauses. */
+   userWantsPlaying, so it stops as soon as the user genuinely pauses.
+   NOTE: this whole retry ladder is only ever used when "Stop on media
+   change" is OFF (see the pause handler below) — it is deliberately NOT
+   part of the stopOnMediaChange decision path, for the same reason
+   explained on checkOutputAndDecide: a resume attempt succeeding is not
+   proof the SAME output device is still there. */
 let resumeRetryToken = 0;
 function scheduleResumeRetries(reason){
   const myToken = ++resumeRetryToken; // a newer retry sequence supersedes an older in-flight one
@@ -3558,8 +3611,20 @@ audio.addEventListener('pause', ()=>{
   logPaused('external/unintended \u2014 "'+(s?s.title:'?')+'" \u2014 '+since);
 
   if(state.stopOnMediaChange){
-    // v3.7.2: directly check whether the output device actually changed,
-    // rather than using play() success as a proxy. See checkOutputAndDecide.
+    const msSinceTrackStart = currentTrackStartedAt ? (Date.now()-currentTrackStartedAt) : Infinity;
+    if(msSinceTrackStart < STARTUP_HICCUP_WINDOW_MS && hiccupRetryCount < STARTUP_HICCUP_MAX_RETRIES){
+      hiccupRetryCount++;
+      Log.info('Stop on media change: pause landed '+msSinceTrackStart+'ms after this track started (retry '+hiccupRetryCount+' of '+STARTUP_HICCUP_MAX_RETRIES+') \u2014 within the startup-hiccup window, retrying instead of stopping');
+      pendingResumeReason = 'startup-hiccup retry '+hiccupRetryCount+' ('+msSinceTrackStart+'ms since track start)';
+      audio.play().then(()=>{
+        Log.info('Startup-hiccup retry '+hiccupRetryCount+' succeeded');
+      }).catch(e=>{
+        pendingResumeReason = null;
+        Log.info('Startup-hiccup retry '+hiccupRetryCount+' failed ('+(e&&e.name?e.name:String(e))+') \u2014 falling through to the device check');
+        checkOutputAndDecide(state.currentId);
+      });
+      return;
+    }
     checkOutputAndDecide(state.currentId);
     return;
   }
@@ -3667,6 +3732,10 @@ if(navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener==='f
     if(!removed.length && !added.length) Log.info('  No output-device change detected (input-only, USB re-enumeration, or phantom event)');
     Log.info('  Output type: '+beforeType+' \u2192 '+afterType+(beforeType===afterType ? ' (unchanged)' : ' (CHANGED)'));
     Log.info('  Audio state: '+audioDiag());
+    if(state.routeDiag){
+      const r = routeSnapshot();
+      Log.info('  Route reading: '+routeSnapshotText()+' \u2014 '+guessRouteFromLatency(r?r.outputLatency:null));
+    }
 
     if(!state.stopOnMediaChange || audio.paused) return;
 
@@ -3706,6 +3775,177 @@ const NETWORK_STATE_NAMES = {0:'NETWORK_EMPTY',1:'NETWORK_IDLE',2:'NETWORK_LOADI
    only existed by cross-referencing wall-clock time against memory.
    buffered.length + first buffered range is often the smoking gun for
    Bluetooth-triggered pauses (0 buffered ranges = decoder just starved). */
+/* ============================================================================
+   AUDIO ROUTE PROBE (v3.7.4) — diagnostic only, decides nothing yet.
+
+   Why this exists: every signal tried so far for "did the output device
+   actually change" has turned out to be unavailable or meaningless on this
+   platform (see the long comment on checkOutputAndDecide). Native Android
+   apps sidestep the problem entirely — the OS hands them
+   ACTION_AUDIO_BECOMING_NOISY the instant audio is about to reroute to the
+   speaker, so they never have to detect anything. The web has no equivalent
+   broadcast.
+
+   AudioContext.outputLatency is the one remaining candidate that needs no
+   permission at all: it reflects the real audio hardware route, and the
+   spec explicitly says it may change while the context is running or when
+   the associated output device changes. Published measurements put
+   Bluetooth around 0.178s against roughly 0.025s for a built-in speaker —
+   roughly 7x, which would be trivially distinguishable if it holds here.
+
+   Two deliberate design choices:
+   1. OFF BY DEFAULT. Taking the measurement needs a live AudioContext,
+      which opens its own output stream. It produces silence and shouldn't
+      disturb playback — but "shouldn't" is an assumption, and this is a
+      player used while driving, so it stays opt-in until a real device log
+      proves it's harmless.
+   2. If the equaliser is already on, its context is measured instead of
+      creating a second one. That reading is strictly better: eqCtx is
+      genuinely carrying the playback audio, so its latency is the real
+      playback route rather than an independent context's view of the
+      default route.
+============================================================================ */
+let routeProbeCtx = null;      // our own context, only when EQ isn't providing one
+let routeProbeFailed = false;  // don't retry forever if AudioContext can't be created
+function activeRouteCtx(){
+  // Prefer the EQ context — it's the one actually carrying playback audio.
+  if(eqCtx) return {ctx:eqCtx, src:'eq'};
+  if(routeProbeCtx) return {ctx:routeProbeCtx, src:'probe'};
+  return null;
+}
+function startRouteProbe(){
+  if(!state.routeDiag) return false;
+  if(eqCtx){ Log.info('Route probe: using the existing equaliser audio context (most accurate \u2014 it carries the playback audio)'); return true; }
+  if(routeProbeCtx) return true;
+  if(routeProbeFailed) return false;
+  try{
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if(!AC){ routeProbeFailed = true; Log.warn('Route probe: AudioContext is not available in this browser \u2014 outputLatency cannot be measured'); return false; }
+    routeProbeCtx = new AC();
+    // Deliberately connect NOTHING. An empty context still opens an output
+    // stream (which is what gives outputLatency a real value) but emits
+    // silence and never touches the <audio> element's own playback path.
+    if(routeProbeCtx.state==='suspended' && routeProbeCtx.resume) routeProbeCtx.resume().catch(()=>{});
+    Log.info('Route probe: started a dedicated silent audio context for route measurement \u00b7 '+routeSnapshotText());
+    return true;
+  }catch(e){
+    routeProbeFailed = true; routeProbeCtx = null;
+    Log.warn('Route probe: could not create an AudioContext: '+(e&&e.message?e.message:e));
+    return false;
+  }
+}
+function stopRouteProbe(){
+  if(routeProbeCtx){
+    try{ routeProbeCtx.close(); }catch(e){}
+    routeProbeCtx = null;
+    Log.info('Route probe: stopped and released its audio context');
+  }
+  lastRouteLatency = null;
+  lastRouteSource = null;
+  clearInterval(routeSampleTimer); routeSampleTimer = null;
+}
+/* Returns the raw numbers, or null if nothing is measurable right now. */
+function routeSnapshot(){
+  const active = activeRouteCtx();
+  if(!active) return null;
+  try{
+    const c = active.ctx;
+    const lat = (typeof c.outputLatency === 'number') ? c.outputLatency : null;
+    return {
+      source: active.src,
+      state: c.state,
+      outputLatency: lat,
+      baseLatency: (typeof c.baseLatency === 'number') ? c.baseLatency : null,
+      sampleRate: c.sampleRate || null,
+      sinkId: (typeof c.sinkId === 'string') ? c.sinkId : (typeof c.sinkId === 'object' ? '(object)' : 'n/a'),
+    };
+  }catch(e){ return null; }
+}
+/* Human-readable one-liner. outputLatency is reported in ms (easier to eyeball
+   against the ~178ms-vs-~25ms figures above) alongside the raw seconds value,
+   so nothing is lost to rounding if the real numbers turn out to be subtler. */
+function routeSnapshotText(){
+  if(!state.routeDiag) return 'route=off';
+  const r = routeSnapshot();
+  if(!r) return 'route=unavailable';
+  const latMs = (r.outputLatency==null) ? 'n/a' : (r.outputLatency*1000).toFixed(1)+'ms';
+  const baseMs = (r.baseLatency==null) ? 'n/a' : (r.baseLatency*1000).toFixed(1)+'ms';
+  const raw = (r.outputLatency==null) ? 'n/a' : r.outputLatency.toFixed(6);
+  return 'route[src='+r.source+' ctx='+r.state+' outLat='+latMs+'(raw '+raw+') baseLat='+baseMs+' sr='+(r.sampleRate||'n/a')+' sink='+r.sinkId+']';
+}
+/* Classifies a latency reading against the published reference figures.
+   Deliberately reported as a GUESS in the log and used for nothing else —
+   the whole point of this build is to find out whether these numbers mean
+   anything on this hardware before any decision is wired to them. */
+function guessRouteFromLatency(latSec){
+  if(latSec==null) return 'unknown (no reading)';
+  const ms = latSec*1000;
+  if(ms >= 100) return 'probably bluetooth (high latency)';
+  if(ms >= 45)  return 'ambiguous (between the usual speaker and bluetooth figures)';
+  if(ms > 0)    return 'probably speaker/wired (low latency)';
+  return 'zero (this browser may not populate outputLatency at all)';
+}
+/* Continuous sampling while playing. The single most valuable thing this
+   build can capture is the latency number IMMEDIATELY BEFORE and AFTER a
+   real disconnect — and a pause-triggered reading alone might miss it, or
+   arrive after the route has already settled. Sampling once a second and
+   logging only on a meaningful move keeps the log readable while still
+   catching the transition. */
+const ROUTE_SAMPLE_MS = 1000;
+const ROUTE_CHANGE_THRESHOLD_MS = 15; // ignore ordinary jitter; a real route change should dwarf this
+let routeSampleTimer = null;
+let lastRouteLatency = null;
+let lastRouteSource = null;
+function sampleRoute(){
+  if(!state.routeDiag) return;
+  const r = routeSnapshot();
+  if(!r || r.outputLatency==null) return;
+  const ms = r.outputLatency*1000;
+  // If the measurement source itself switched (e.g. the equaliser was turned
+  // on mid-session, so we're now reading eqCtx instead of our own probe), the
+  // two contexts aren't directly comparable — rebaseline rather than report a
+  // route change that didn't happen.
+  if(lastRouteSource !== null && lastRouteSource !== r.source){
+    Log.info('Route probe: measurement source changed ('+lastRouteSource+' \u2192 '+r.source+') \u2014 rebaselining, not treating this as a route change');
+    lastRouteSource = r.source;
+    lastRouteLatency = ms;
+    return;
+  }
+  lastRouteSource = r.source;
+  if(lastRouteLatency == null){
+    lastRouteLatency = ms;
+    Log.info('Route baseline: '+ms.toFixed(1)+'ms \u2014 '+guessRouteFromLatency(r.outputLatency)+' \u00b7 '+routeSnapshotText());
+    return;
+  }
+  if(Math.abs(ms - lastRouteLatency) >= ROUTE_CHANGE_THRESHOLD_MS){
+    Log.warn('*** ROUTE LATENCY CHANGED: '+lastRouteLatency.toFixed(1)+'ms \u2192 '+ms.toFixed(1)+'ms'
+      +' (was '+guessRouteFromLatency(lastRouteLatency/1000)+', now '+guessRouteFromLatency(r.outputLatency)+')'
+      +' \u00b7 paused='+audio.paused+' \u00b7 '+routeSnapshotText());
+    lastRouteLatency = ms;
+  }
+}
+function startRouteSampling(){
+  clearInterval(routeSampleTimer); routeSampleTimer = null;
+  if(!state.routeDiag) return;
+  if(!startRouteProbe()) return;
+  lastRouteLatency = null;
+  lastRouteSource = null;
+  routeSampleTimer = setInterval(sampleRoute, ROUTE_SAMPLE_MS);
+  sampleRoute();
+}
+function setRouteDiag(on){
+  state.routeDiag = on;
+  Log.info('Audio route diagnostics: '+(on?'enabled':'disabled'));
+  if(on){
+    routeProbeFailed = false;
+    startRouteSampling();
+    Log.info('Route diagnostics ready. To capture a real disconnect: play a song over bluetooth, let it run well past 2 seconds, then turn bluetooth off \u2014 then save the debug log.');
+  }else{
+    stopRouteProbe();
+  }
+  persistPrefs();
+}
+
 function audioDiag(){
   try{
     const t = (audio.currentTime||0).toFixed(2);
@@ -3726,7 +3966,8 @@ function audioDiag(){
       +' net='+audio.networkState+'('+(NETWORK_STATE_NAMES[audio.networkState]||'?')+')'
       +' paused='+audio.paused+' ended='+audio.ended+' vis='+vis
       +' out='+out
-      +' t='+t+'/'+dStr+' buf='+buf+' err='+err;
+      +' t='+t+'/'+dStr+' buf='+buf+' err='+err
+      +(state.routeDiag ? ' '+routeSnapshotText() : '');
   }catch(e){ return 'diag-failed:'+(e&&e.message?e.message:e); }
 }
 /* Track pauses/stalls/waits ONCE per src so switching songs while a
@@ -3740,29 +3981,55 @@ let posStateErrorLoggedForSrc = false;
    useful for spotting whether pauses cluster right after a track starts
    (decoder-warmup issue?) vs mid-track (buffer starve / audio focus). */
 let lastPlayEventAt = 0;
-/* How the "Stop on media change" decision works (v3.7.0 redesign):
-   rather than anchoring to how long the TRACK had been playing (the old
-   grace-period system — see the removed MEDIA_CHANGE_GRACE_MS/
-   currentTrackStartedAt/hiccupRetryCountForTrack for the history of why
-   that was fragile: it caused a real repeat-one bug in v3.6.2 and a
-   confusing "88ms since play started / retried 5 times already"
-   mismatch), every unintended pause now gets the SAME short burst of
-   quick rechecks — 20ms, then 60ms, then 100ms after the pause — before
-   committing to a visible "stopped" state. Only if all three fail is
-   the stop actually respected. This directly tests the thing that
-   matters (is the device back yet), not a proxy for it, and needs no
-   per-track state that could leak across tracks/loops at all. */
-/* v3.7.2 redesign: instead of using audio.play() success/failure as a
-   proxy for "is the output device still there" (play() can fail for
-   unrelated reasons like audio focus), directly check the device list.
-   Snapshot outputs at the moment of the pause, wait 150ms for transients
-   to settle, re-snapshot, compare: did any output actually disappear?
-   If unchanged → resume (it was a hiccup, not a real change).
-   If a device is genuinely gone → respect the pause. */
+/* How the "Stop on media change" decision works, current version (v3.7.3).
+
+   Two earlier approaches were tried for the general (non-startup) case,
+   and a real device log showed both share the same fundamental flaw:
+
+   - v3.7.0 tested "does audio.play() succeed" as a stand-in for "is the
+     output device still there." It doesn't work: Android's own
+     auto-pause-on-route-change (the courtesy "becoming noisy" pause that
+     produces the "PAUSED — external/unintended" log line in the first
+     place) does NOT block a follow-up play() call from succeeding on
+     whatever the NEW default output now is. play() reliably SUCCEEDS
+     even after a genuine Bluetooth disconnect or cable unplug — it just
+     quietly starts playing through the phone speaker instead, which is
+     exactly what this setting exists to prevent. Confirmed directly: a
+     real log showed "Resumed successfully" immediately after what was,
+     by report, a genuine Bluetooth-off event.
+   - v3.7.1/v3.7.2 replaced that with a direct device-list comparison
+     (snapshotOutputDevices, via enumerateDevices) on the theory that
+     checking the actual device list would be more honest than a proxy.
+     A real device log (Sep 2026) showed this doesn't work either: on
+     that hardware, enumerateDevices() reports exactly one permanently
+     unlabeled "(unknown)" audiooutput device, before AND after a
+     genuine Bluetooth-off event — Android Chrome's audiooutput
+     enumeration doesn't necessarily track real hardware routing changes
+     the way desktop Chrome's does, and without an active getUserMedia
+     permission (which this app has no reason to ever request), device
+     labels are blank regardless. So "no device disappeared" from this
+     list was never real evidence of anything on that phone — it said
+     that unconditionally, turning "Stop on media change" into a no-op
+     for exactly the real-world case it exists to catch.
+
+   Neither "did play() succeed" nor "did the device list change" can be
+   trusted to answer "is this actually the same device coming back" —
+   and getting that wrong in the resume direction means the audio
+   actually starts playing through the wrong output (the speaker, while
+   driving) rather than just failing to resume a real hiccup, a much
+   worse outcome. So the decision now defaults to the safe side: once a
+   genuine unintended pause happens outside the narrow, timing-based
+   startup-hiccup window (see markFreshTrackStart / STARTUP_HICCUP_*
+   above, which doesn't depend on identifying a device at all, only on
+   when in the track it happened), the pause is simply respected. The
+   device-list snapshot is still taken and logged here — it costs
+   nothing, and remains genuinely useful evidence if it ever DOES show a
+   real difference on some device/Chrome version, which is called out
+   distinctly in the log when it happens — but it no longer decides
+   whether to resume. */
 const MEDIA_CHANGE_SETTLE_MS = 150;
 let mediaChangeCheckToken = 0;
-/* Set true whenever the pause handler deliberately respects a stop
-   (a real output device confirmed gone after the settle window),
+/* Set true whenever the pause handler deliberately respects a stop,
    cleared the moment any resume the app actually recognizes happens.
    Confirmed from a real device log (v3.6.3): playback resumed 82
    seconds after a respected stop, with NONE of this app's own tagged
@@ -3783,8 +4050,12 @@ function respectMediaChangeStop(reason){
   markPlayingRows();
 }
 /* The core decision: when an unintended pause arrives with "Stop on
-   media change" on, check whether the output device ACTUALLY changed
-   rather than guessing based on play() success. */
+   media change" on (and outside the startup-hiccup window), check the
+   device list purely for diagnostic/logging value and for the one case
+   it CAN speak to with confidence — a device it can positively see
+   disappear. Anything short of that positive confirmation now respects
+   the pause rather than assuming it was fake; see the comment above
+   this function for why. */
 async function checkOutputAndDecide(forId){
   const myToken = ++mediaChangeCheckToken;
   const typeAtPause = currentOutputType();
@@ -3795,6 +4066,11 @@ async function checkOutputAndDecide(forId){
   Log.info('  Trigger: unintended pause on "'+((state.library.get(forId)||{}).title||forId)+'"');
   Log.info('  Output at pause: '+outputDeviceSummary(atPause)+' ('+atPause.length+' device(s))');
   Log.info('  Active output type at pause: '+typeAtPause);
+  // v3.7.4 diagnostic: the latency reading is the signal actually under
+  // test here. It decides nothing yet — it's logged either side of the
+  // settle window so a real device log can show whether it moves.
+  const routeAtPause = state.routeDiag ? routeSnapshot() : null;
+  if(state.routeDiag) Log.info('  Route at pause: '+routeSnapshotText()+' \u2014 '+guessRouteFromLatency(routeAtPause?routeAtPause.outputLatency:null));
   Log.info('  Waiting '+MEDIA_CHANGE_SETTLE_MS+'ms for transients to settle\u2026');
   // Wait for transients to settle. A BT route renegotiation or a USB
   // re-enumeration blip typically resolves well within this window.
@@ -3815,29 +4091,42 @@ async function checkOutputAndDecide(forId){
   Log.info('  Active output type after settle: '+typeAfterSettle);
   if(disappeared.length) Log.info('  Devices that LEFT: '+disappeared.map(d=>d.label+' ['+classifyOutput(d.label)+']').join(', '));
   if(appeared.length) Log.info('  Devices that ARRIVED: '+appeared.map(d=>d.label+' ['+classifyOutput(d.label)+']').join(', '));
-  if(!disappeared.length && !appeared.length) Log.info('  Device list: IDENTICAL before and after settle');
+  if(!disappeared.length && !appeared.length) Log.info('  Device list: IDENTICAL before and after settle (on many Android/Chrome builds this list never reflects a real change at all \u2014 see the comment above checkOutputAndDecide)');
   Log.info('  Output type change: '+typeAtPause+' \u2192 '+typeAfterSettle+(typeAtPause===typeAfterSettle ? ' (SAME)' : ' (DIFFERENT)'));
-  if(disappeared.length === 0){
-    // The output-device list is stable — nothing actually left. This
-    // pause was NOT a real media-output change. Resume.
-    Log.info('  \u2714 DECISION: NO output device removed \u2014 this was NOT a real output change');
-    Log.info('  \u2714 ACTION: resuming playback');
-    Log.info('=== MEDIA CHANGE CHECK END (resuming) ===');
-    pendingResumeReason = 'output devices verified unchanged after '+MEDIA_CHANGE_SETTLE_MS+'ms settle (not a real media change)';
-    audio.play().then(()=>{
-      Log.info('Resumed successfully after verifying output devices are stable \u00b7 out='+currentOutputType());
-    }).catch(e=>{
-      pendingResumeReason = null;
-      Log.warn('Resume after device-check failed: '+(e&&e.name?e.name:String(e))+' \u2014 scheduling retries \u00b7 '+audioDiag());
-      scheduleResumeRetries('after device-stable verification');
-    });
-  }else{
-    // A real output device genuinely disappeared. Respect the pause.
-    Log.info('  \u2718 DECISION: output device REMOVED ("'+disappeared.map(d=>d.label+' ['+classifyOutput(d.label)+']').join('", "')+'")\u2014 confirmed gone');
-    Log.info('  \u2718 ACTION: respecting the pause, NOT resuming');
-    Log.info('=== MEDIA CHANGE CHECK END (staying paused) ===');
-    respectMediaChangeStop('output device removed ("'+disappeared.map(d=>d.label+' ['+classifyOutput(d.label)+']').join('", "')+'") \u2014 confirmed gone after '+MEDIA_CHANGE_SETTLE_MS+'ms');
+
+  // v3.7.4: the comparison this whole diagnostic build exists to produce.
+  if(state.routeDiag){
+    const routeAfter = routeSnapshot();
+    Log.info('  Route after settle: '+routeSnapshotText()+' \u2014 '+guessRouteFromLatency(routeAfter?routeAfter.outputLatency:null));
+    const a = routeAtPause && routeAtPause.outputLatency!=null ? routeAtPause.outputLatency*1000 : null;
+    const b = routeAfter && routeAfter.outputLatency!=null ? routeAfter.outputLatency*1000 : null;
+    if(a==null || b==null){
+      Log.info('  >>> ROUTE VERDICT: no usable latency reading on this device \u2014 outputLatency is '+(a==null&&b==null?'unavailable on both sides':'missing on one side')+' of the settle window');
+    }else if(Math.abs(b-a) >= ROUTE_CHANGE_THRESHOLD_MS){
+      Log.warn('  >>> ROUTE VERDICT: latency MOVED '+a.toFixed(1)+'ms \u2192 '+b.toFixed(1)+'ms \u2014 this looks like a REAL output route change. If this line shows up on a genuine disconnect (and not on a random pause), mid-track detection can be rebuilt on this signal.');
+    }else{
+      Log.info('  >>> ROUTE VERDICT: latency essentially unchanged ('+a.toFixed(1)+'ms \u2192 '+b.toFixed(1)+'ms) \u2014 no route change detected by this signal');
+    }
   }
+
+  if(disappeared.length > 0){
+    Log.info('  \u2718 DECISION: output device REMOVED ("'+disappeared.map(d=>d.label+' ['+classifyOutput(d.label)+']').join('", "')+'") \u2014 confirmed gone');
+    Log.info('  \u2718 ACTION: respecting the pause, NOT resuming');
+    Log.info('=== MEDIA CHANGE CHECK END (staying paused \u2014 device confirmed gone) ===');
+    respectMediaChangeStop('output device removed ("'+disappeared.map(d=>d.label+' ['+classifyOutput(d.label)+']').join('", "')+'") \u2014 confirmed gone after '+MEDIA_CHANGE_SETTLE_MS+'ms');
+    return;
+  }
+
+  // No positive evidence either way. Per the comment above this
+  // function, "no device disappeared" is not proof this was a hiccup —
+  // on plenty of Android/Chrome builds that's the permanent reading
+  // regardless of what actually happened. Default to the safe side:
+  // stay stopped rather than risk resuming onto whatever output Android
+  // switched to.
+  Log.info('  \u2718 DECISION: device list gave no usable signal \u2014 defaulting to the safe side rather than risking a resume onto the wrong output');
+  Log.info('  \u2718 ACTION: respecting the pause, NOT resuming');
+  Log.info('=== MEDIA CHANGE CHECK END (staying paused \u2014 no usable device signal) ===');
+  respectMediaChangeStop('output device list gave no usable signal after '+MEDIA_CHANGE_SETTLE_MS+'ms (this platform\u2019s device list does not reliably reflect real Bluetooth/wired changes) \u2014 defaulting to staying stopped');
 }
 
 /* ---- External (MediaSession) play/pause gating ----
@@ -4718,7 +5007,8 @@ function persistPrefs(){
   prefsTimer = setTimeout(()=>{
     DB.set('prefs', {sort:state.sort, volume:state.volume, shuffle:state.shuffle, repeat:state.repeat, view:state.view,
       accent:state.accent, speed:state.speed, bookSpeed:state.bookSpeed, eqEnabled:state.eqEnabled, eqGains:state.eqGains,
-      favorites:state.favorites, recent:state.recent, stopOnMediaChange:state.stopOnMediaChange}).catch(()=>{});
+      favorites:state.favorites, recent:state.recent, stopOnMediaChange:state.stopOnMediaChange,
+      routeDiag:state.routeDiag}).catch(()=>{});
   }, 250);
 }
 function persistPlaylists(){
@@ -5501,6 +5791,7 @@ async function boot(){
       if(typeof prefs.eqEnabled==='boolean') state.eqEnabled = prefs.eqEnabled;
       if(Array.isArray(prefs.eqGains) && prefs.eqGains.length===6) state.eqGains = prefs.eqGains.slice();
       if(typeof prefs.stopOnMediaChange==='boolean') state.stopOnMediaChange = prefs.stopOnMediaChange;
+      if(typeof prefs.routeDiag==='boolean') state.routeDiag = prefs.routeDiag;
       if(Array.isArray(prefs.favorites)) state.favorites = prefs.favorites.slice();
       if(Array.isArray(prefs.recent)) state.recent = prefs.recent.slice();
     }
@@ -5571,6 +5862,13 @@ async function boot(){
     }catch(e){ console.warn('resume failed', e); }
   }
   refreshCurrentView();
+  // v3.7.4: if route diagnostics were left on from a previous session,
+  // bring the probe back up so a disconnect is captured without needing
+  // to re-toggle anything first.
+  if(state.routeDiag){
+    Log.info('Audio route diagnostics are ON (v3.7.4 diagnostic build)');
+    startRouteSampling();
+  }
   Log.info('Boot complete');
 }
 
@@ -5617,7 +5915,9 @@ function onAppForeground(){
   //
   // v3.7.2: simplified to just the setting itself. The pause handler's
   // own device-list check (checkOutputAndDecide) already resolves "was
-  // this a real output change" within ~150ms of the pause happening;
+  // this a real output change" within ~150ms of the pause happening (as
+  // of v3.7.3, defaulting to "stay stopped" whenever that check can't
+  // positively confirm otherwise — see the comment on checkOutputAndDecide);
   // by the time a human actually reopens the app, any pause still in
   // effect has already been through that and deliberately settled.
   const respecting = state.stopOnMediaChange;
@@ -5871,10 +6171,16 @@ function renderSettings(){
   for(const s of state.library.values()){ if(extOf(s.name)==='wma') wmaCount++; }
   html += '<div class="set-group"><h3>Advanced</h3><div class="set-card">'
     + '<button class="set-row" data-set="log"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></div><div class="sm"><div class="st">Debug log</div><div class="ss">'+Log.count()+' entries · actions, imports, playback &amp; errors</div></div>'+chev+'</button>'
+    + '<button class="set-row" data-toggle="routediag"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></div>'
+    + '<div class="sm"><div class="st">Audio route diagnostics</div><div class="ss">Measure output latency to detect a real Bluetooth/cable disconnect. Diagnostic only \u2014 changes nothing about playback.</div></div>'
+    + '<div class="tgl'+(state.routeDiag?' on':'')+'"><span></span></div></button>'
     + '<button class="set-row" data-set="checkformats"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg></div><div class="sm"><div class="st">Check library for mismatched files</div><div class="ss">Find songs whose actual content doesn\'t match their file extension</div></div>'+chev+'</button>'
     + '<button class="set-row" data-set="dupfind"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></div><div class="sm"><div class="st">Find duplicate songs</div><div class="ss">Match by title and audio content, not just filename</div></div>'+chev+'</button>'
     + '<button class="set-row" data-set="unplayablefind"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg></div><div class="sm"><div class="st">Remove unplayable songs</div><div class="ss">Test every song and delete the ones the browser can\'t decode</div></div>'+chev+'</button>'
     + '</div>'
+    + (state.routeDiag
+        ? '<div class="set-note" style="margin-top:10px;color:var(--amber);">Route diagnostics are ON. To capture a disconnect: play a song over Bluetooth, let it run well past 2 seconds, then turn Bluetooth off \u2014 then Debug log \u2192 Save and share it. Turn this back off when you\u2019re done; it keeps a silent audio context open to take the measurement.</div>'
+        : '')
     + '<div class="set-note">The log stays on your device and is never sent anywhere. Useful if something isn\'t working right and you want to see exactly what happened.</div>'
     + '<div class="set-note" style="margin-top:10px;">A song can fail to play because it isn\'t really what its file extension claims \u2014 e.g. an .mp3 that\'s actually a renamed .wma from a conversion that didn\'t fully work. This check reads just the first few bytes of every song (never the whole file) and reports any mismatches to the debug log. It only reports \u2014 nothing gets changed, removed, or converted.</div>'
     + (wmaCount>0
@@ -5893,6 +6199,8 @@ function onSettingsClick(e){
   if(sp){ setSpeed(parseFloat(sp.getAttribute('data-speed'))); renderSettings(); return; }
   const tg = e.target.closest('[data-toggle="eq"]');
   if(tg){ setEQEnabled(!state.eqEnabled); renderSettings(); return; }
+  const trd = e.target.closest('[data-toggle="routediag"]');
+  if(trd){ setRouteDiag(!state.routeDiag); renderSettings(); return; }
   const tsm = e.target.closest('[data-toggle="stopmedia"]');
   if(tsm){ setStopOnMediaChange(!state.stopOnMediaChange); renderSettings(); return; }
   const ep = e.target.closest('[data-eqpreset]');
@@ -6374,6 +6682,7 @@ async function playBookPart(partIndex, seekTime, autoplay){
   intentionalPause = false;
   renderBookPlayer();
   if(autoplay){
+    markFreshTrackStart();
     pendingResumeReason = FRESH_TRACK_START;
     try{
       await audio.play(); state.playing=true;

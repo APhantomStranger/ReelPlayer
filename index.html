@@ -1350,8 +1350,12 @@ const state = {
   routeDiag: false,         // when true, measure AudioContext.outputLatency to detect real route changes
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.7.6';
+const APP_VERSION = '3.7.7';
 const CHANGELOG = [
+  { v:'3.7.7', date:'Sep 14, 2026', items:[
+    'Fixed Copy and Save producing a different log than the one on screen. They were built from a separate, independently-written function (Log.text()) that walked entries oldest-first with a full date on every line, while the screen shows newest-first with the date only in a separator \u2014 same entries, two unrelated presentations. Copy and Save now render from the exact same ordering/grouping function the screen uses, so there is no longer a second implementation that can drift out of sync with the first.',
+    'The one deliberate addition beyond a literal screen copy: WARN/ERROR lines are distinguished on screen only by text colour, which a plain-text copy can\u2019t carry \u2014 so the level is spelled out on each line in the copied/saved text instead of silently losing that signal the moment it leaves the app.',
+  ]},
   { v:'3.7.6', date:'Sep 14, 2026', items:[
     'Found the pauses. They were in the previous debug log the whole time \u2014 not as events, but as arithmetic. "We Didn\u2019t Start the Fire" is 290.83 seconds long and took 295.65 seconds of wall-clock time to play: 4.8 seconds of audio never happened, with NO pause event firing at any point. The same session lost 14.2s on "96 Tears" (7.4% of its runtime) and 10.1s on "Todbereit" (4.4%) \u2014 29 seconds lost across three songs. So the interruptions are real, repeated, and invisible to every event listener in the app, which is exactly why nothing showed up.',
     'This also explains the "it resumes the moment I reopen the app" report: audio is being briefly suspended and restarted without the media element ever dispatching a pause, so there has never been anything for the app to react to or log.',
@@ -1742,15 +1746,6 @@ const DB = (() => {
         window 'error' and 'unhandledrejection' listener for anything that
         slips through uncaught.
 ============================================================================ */
-/* Formats a millisecond gap between two log entries in the most readable
-   unit — used by Log.text() so a debug-log excerpt shows timing at a
-   glance instead of requiring someone to subtract timestamps by hand. */
-function formatLogDelta(ms){
-  if(ms<1000) return '+'+ms+'ms';
-  if(ms<60000) return '+'+(ms/1000).toFixed(1)+'s';
-  if(ms<3600000) return '+'+(ms/60000).toFixed(1)+'m';
-  return '+'+(ms/3600000).toFixed(1)+'h';
-}
 const Log = (()=>{
   // Raised from 800 in v3.7.5: the background/lifecycle forensics below and
   // the verbose event trace produce far more lines, and a session where the
@@ -1789,26 +1784,6 @@ const Log = (()=>{
     flush:()=>{ try{ clearTimeout(saveTimer); DB.set('debugLog', buf).catch(()=>{}); }catch(e){} },
     entries:()=>buf.slice(),
     count:()=>buf.length,
-    text:()=>{
-      const lines = [];
-      let prevT = null;
-      for(const e of buf){
-        const d = new Date(e.t);
-        const dateStr = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-        const ts = dateStr+' '+d.toTimeString().slice(0,8)+'.'+String(d.getMilliseconds()).padStart(3,'0');
-        // A boot line always starts a fresh app session — insert a clear
-        // separator so a long, multi-day log (much more likely now that
-        // the buffer holds 800 entries) is easy to scan by eye for where
-        // one run of the app ends and the next begins.
-        if(/^Reel v[\d.]+ booting/.test(e.msg) && lines.length>0){
-          lines.push('----------------------- SESSION START -----------------------');
-        }
-        const delta = prevT!=null ? '  ('+formatLogDelta(e.t-prevT)+')' : '';
-        lines.push('['+ts+'] '+e.level.toUpperCase().padEnd(5)+' '+e.msg+delta);
-        prevT = e.t;
-      }
-      return lines.join('\n');
-    },
     async load(){
       try{ const saved = await DB.get('debugLog'); if(Array.isArray(saved)) buf = saved.slice(-MAX); }catch(e){}
     },
@@ -6599,6 +6574,63 @@ function renderAbout(){
 /* ============================================================================
    Debug Log viewer
 ============================================================================ */
+/* ============================================================================
+   Debug Log viewer
+
+   v3.7.7: Copy and Save used to be built from Log.text() — a completely
+   separate function from renderLogView(), written independently, that
+   walked the entries oldest-first with full dates on every line and a
+   different session-separator format. The on-screen view walks newest-first
+   with dates only in a separator. Same underlying entries, two unrelated
+   presentations — which is exactly why what you copied didn't match what
+   you were looking at.
+
+   Fixed by having a single function (buildLogRows) decide the order and
+   grouping ONCE, and having the screen, the copy button, and the save
+   button all render THAT — so there is no longer a second implementation
+   that can drift out of sync with the first.
+============================================================================ */
+/* Returns an ordered array describing exactly what the log screen shows:
+   newest entry first, a date-separator row whenever the day changes, and a
+   session-separator row directly above each boot line — identical grouping
+   for every consumer. */
+function buildLogRows(){
+  const entries = Log.entries();
+  const rows = [];
+  let prevDateStr = null;
+  for(let i=entries.length-1;i>=0;i--){
+    const e = entries[i];
+    const d = new Date(e.t);
+    const dateStr = d.toDateString();
+    if(dateStr !== prevDateStr){
+      rows.push({type:'date', text:dateStr});
+      prevDateStr = dateStr;
+    }
+    if(/^Reel v[\d.]+ booting/.test(e.msg)){
+      rows.push({type:'session'});
+    }
+    const ts = d.toTimeString().slice(0,8)+'.'+String(d.getMilliseconds()).padStart(3,'0');
+    rows.push({type:'entry', ts, level:e.level, msg:e.msg});
+  }
+  return rows;
+}
+/* Plain-text rendering of buildLogRows(), used by both Copy and Save so they
+   are always identical to each other and to the screen. The level word is
+   the one thing added beyond what's visually on screen — on screen WARN/
+   ERROR lines are distinguished only by text colour, which plain text can't
+   carry, so it's spelled out here instead of silently losing that signal
+   the moment it's copied. Everything else (order, grouping, timestamp
+   format) matches the screen exactly. */
+function logRowsToText(rows){
+  if(rows.length===0) return 'No log entries yet.';
+  const lines = [];
+  for(const row of rows){
+    if(row.type==='date') lines.push('\u2500\u2500\u2500\u2500 '+row.text+' \u2500\u2500\u2500\u2500');
+    else if(row.type==='session') lines.push('\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 App started \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500');
+    else lines.push(row.ts+'  '+row.level.toUpperCase().padEnd(5)+' '+row.msg);
+  }
+  return lines.join('\n');
+}
 function renderLogView(){
   const entries = Log.entries();
   $('logCount').textContent = pluralize(entries.length,'entry').replace('entrys','entries');
@@ -6606,27 +6638,17 @@ function renderLogView(){
     $('logScroll').innerHTML = '<div class="log-empty">No log entries yet.<br>Actions, imports, playback, and any errors will appear here as you use the app.</div>';
     return;
   }
-  // newest first — most useful for "what just happened" debugging
+  const rows = buildLogRows();
   let html='';
-  let prevDateStr = null; // date of the line already rendered above (more recent), since we walk newest -> oldest
-  for(let i=entries.length-1;i>=0;i--){
-    const e = entries[i];
-    const d = new Date(e.t);
-    const dateStr = d.toDateString();
-    if(dateStr !== prevDateStr){
-      html += '<div class="log-date-sep">'+esc(dateStr)+'</div>';
-      prevDateStr = dateStr;
-    }
-    if(/^Reel v[\d.]+ booting/.test(e.msg)){
-      html += '<div class="log-session-sep">App started</div>';
-    }
-    const ts = d.toTimeString().slice(0,8)+'.'+String(d.getMilliseconds()).padStart(3,'0');
-    html += '<div class="log-line '+esc(e.level)+'"><span class="lt">'+ts+'</span><span class="lm">'+esc(e.msg)+'</span></div>';
+  for(const row of rows){
+    if(row.type==='date') html += '<div class="log-date-sep">'+esc(row.text)+'</div>';
+    else if(row.type==='session') html += '<div class="log-session-sep">App started</div>';
+    else html += '<div class="log-line '+esc(row.level)+'"><span class="lt">'+row.ts+'</span><span class="lm">'+esc(row.msg)+'</span></div>';
   }
   $('logScroll').innerHTML = html;
 }
 async function copyLogToClipboard(){
-  const text = Log.text();
+  const text = logRowsToText(buildLogRows());
   try{
     if(navigator.clipboard && navigator.clipboard.writeText){ await navigator.clipboard.writeText(text); }
     else{
@@ -6639,7 +6661,7 @@ async function copyLogToClipboard(){
 }
 function downloadLog(){
   try{
-    const blob = new Blob([Log.text()], {type:'text/plain'});
+    const blob = new Blob([logRowsToText(buildLogRows())], {type:'text/plain'});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     const stamp = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);

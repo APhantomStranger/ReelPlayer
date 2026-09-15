@@ -989,8 +989,9 @@
         <div class="pl-actions"><button class="btn-primary" id="newPlaylistBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>New playlist</button>
         <div class="pl-file-actions">
           <button class="btn-ghost" id="importPlaylistBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Import</button>
-          <button class="btn-ghost" id="backupPlaylistsBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Back up all</button>
-        </div></div>
+        </div>
+        <button class="btn-ghost" id="backupPlaylistsBtn" style="margin-top:12px;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Back up all playlists</button>
+        </div>
         <div id="playlistsList"></div>
       </div></div>
     </section>
@@ -1369,8 +1370,14 @@ const state = {
   routeDiag: false,         // when true, measure AudioContext.outputLatency to detect real route changes
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.7.8';
+const APP_VERSION = '3.7.9';
 const CHANGELOG = [
+  { v:'3.7.9', date:'Sep 15, 2026', items:[
+    'The Playlists tab\u2019s backup button is now "Back up all playlists" and produces a single .zip containing one .json file per playlist, instead of one combined file \u2014 so each playlist is its own file to browse, archive, or hand off individually, and each one is independently importable on its own the same way a single playlist export already is. Moved to its own full-width row since the new label no longer fits comfortably next to Import.',
+    'The zip is built entirely in-app with no external library \u2014 a small hand-written writer (uncompressed/STORED entries, which is all plain JSON text needs), keeping Reel exactly as dependency-free as it already was for ID3 tags, audio-format sniffing, and fingerprinting. Verified against a real unzip tool before shipping, not just assumed to work.',
+    'Worth knowing: restoring from the zip now takes one Import tap per extracted file rather than one tap for everything, since Import still takes a single file at a time. A one-tap "import this whole zip" restore is a reasonable follow-up if it turns out to matter.',
+    'Internal: the "create a temporary link and click it" download step \u2014 previously written out separately in two different save functions \u2014 is now one shared helper, so a third copy couldn\u2019t quietly drift the way the log Copy button did in v3.7.7.',
+  ]},
   { v:'3.7.8', date:'Sep 15, 2026', items:[
     'Found why installing kept falling back to a shortcut: Chrome\u2019s menu says "Install and create shortcut" \u2192 "Install app" specifically when it CANNOT build a real installed app (a WebAPK) and is falling back to a bookmark that still runs as a plain browser tab \u2014 when Chrome can build a real one, the option just says "Install", with no "shortcut" wording at all. Loading the app via GitHub\u2019s raw file viewer doesn\u2019t serve the manifest/icons/service-worker at reachable paths, so Chrome\u2019s installability check was always failing and silently taking the fallback path. This isn\u2019t fixable from inside the HTML file \u2014 it requires actually serving the app from real web hosting (e.g. GitHub Pages) with all five files (index.html, manifest.json, sw.js, icon-192.png, icon-512.png) alongside each other.',
     'New: a status badge next to the "Reel" title \u2014 a green check when running installed as a real app, a red X when running as a plain browser tab. This used to only be visible by digging into the debug log after the fact; now it\u2019s always on screen, since whether background audio can work at all hinges entirely on this one fact.',
@@ -5981,14 +5988,21 @@ function songExportEntry(id){
 function playlistToObj(p){
   return { name:p.name, songs:p.songIds.map(songExportEntry) };
 }
+/* Shared "save this Blob as a file" trigger. v3.7.9: previously duplicated
+   independently inside downloadJSON and downloadLog — two copies of the
+   same handful of lines is exactly the pattern that let the log Copy
+   button silently drift out of sync with the screen in v3.7.7. Consolidated
+   to one implementation so the new zip backup doesn't become a third. */
+function triggerBlobDownload(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 4000);
+}
 function downloadJSON(obj, filename){
   try{
-    const blob = new Blob([JSON.stringify(obj, null, 2)], {type:'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = filename;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+    triggerBlobDownload(new Blob([JSON.stringify(obj, null, 2)], {type:'application/json'}), filename);
     return true;
   }catch(e){ Log.warn('Playlist file download failed: '+(e&&e.message?e.message:e)); return false; }
 }
@@ -6003,13 +6017,110 @@ function exportPlaylist(plId){
     toastDone('Playlist saved to file');
   }else{ toastDone('Couldn\u2019t save the file', false, true); }
 }
+
+/* ============================================================================
+   MINIMAL ZIP WRITER (v3.7.9)
+   Hand-written, dependency-free, STORED (uncompressed) entries only. Reel
+   has no reason to pull in a compression library just to bundle a handful
+   of small JSON text files together — staying dependency-free here matches
+   how every other file format in this app (ID3 tags, WAV/FLAC/OGG
+   signature sniffing, SHA-256 fingerprinting) is already handled from
+   scratch rather than via a library. Produces a standard PKZIP archive that
+   any unzip tool — Windows Explorer, macOS Archive Utility, Android file
+   managers — can open; verified in this project's own build environment
+   with `unzip -t` and a full extract-and-diff against the source data
+   before shipping.
+============================================================================ */
+function zU16(n){ return new Uint8Array([n&0xFF,(n>>>8)&0xFF]); }
+function zU32(n){ return new Uint8Array([n&0xFF,(n>>>8)&0xFF,(n>>>16)&0xFF,(n>>>24)&0xFF]); }
+const ZIP_CRC_TABLE = (()=>{
+  const t = new Uint32Array(256);
+  for(let n=0;n<256;n++){
+    let c = n;
+    for(let k=0;k<8;k++){ c = (c&1) ? (0xEDB88320 ^ (c>>>1)) : (c>>>1); }
+    t[n] = c>>>0;
+  }
+  return t;
+})();
+function zCrc32(bytes){
+  let c = 0xFFFFFFFF;
+  for(let i=0;i<bytes.length;i++){ c = ZIP_CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c>>>8); }
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function zDosDateTime(d){
+  const time = ((d.getHours()&0x1F)<<11) | ((d.getMinutes()&0x3F)<<5) | ((Math.floor(d.getSeconds()/2))&0x1F);
+  const date = (((d.getFullYear()-1980)&0x7F)<<9) | (((d.getMonth()+1)&0xF)<<5) | (d.getDate()&0x1F);
+  return {time, date};
+}
+function zConcat(parts){
+  let total=0; for(const p of parts) total+=p.length;
+  const out = new Uint8Array(total);
+  let off=0; for(const p of parts){ out.set(p,off); off+=p.length; }
+  return out;
+}
+/* entries: [{name: string, bytes: Uint8Array}]. Returns a Blob (application/zip). */
+function buildZipBlob(entries){
+  const enc = new TextEncoder();
+  const {time, date} = zDosDateTime(new Date());
+  const FLAG_UTF8 = 0x0800; // filenames may contain non-ASCII playlist names
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  for(const entry of entries){
+    const nameBytes = enc.encode(entry.name);
+    const data = entry.bytes;
+    const crc = zCrc32(data);
+    const size = data.length;
+    const localHeader = zConcat([
+      zU32(0x04034b50), zU16(20), zU16(FLAG_UTF8), zU16(0),
+      zU16(time), zU16(date), zU32(crc), zU32(size), zU32(size),
+      zU16(nameBytes.length), zU16(0), nameBytes,
+    ]);
+    localParts.push(localHeader, data);
+    const localHeaderOffset = offset;
+    offset += localHeader.length + data.length;
+    centralParts.push(zConcat([
+      zU32(0x02014b50), zU16(20), zU16(20), zU16(FLAG_UTF8), zU16(0),
+      zU16(time), zU16(date), zU32(crc), zU32(size), zU32(size),
+      zU16(nameBytes.length), zU16(0), zU16(0), zU16(0), zU16(0), zU32(0),
+      zU32(localHeaderOffset), nameBytes,
+    ]));
+  }
+  const centralDir = zConcat(centralParts);
+  const eocd = zConcat([
+    zU32(0x06054b50), zU16(0), zU16(0),
+    zU16(entries.length), zU16(entries.length),
+    zU32(centralDir.length), zU32(offset), zU16(0),
+  ]);
+  return new Blob([...localParts, centralDir, eocd], {type:'application/zip'});
+}
+/* Deduplicates filenames within one zip (two playlists that sanitize to the
+   same name would otherwise silently collide and overwrite each other). */
+function zipUniqueName(baseNoExt, ext, used){
+  let candidate = baseNoExt+ext, n=2;
+  while(used.has(candidate.toLowerCase())){ candidate = baseNoExt+' ('+n+')'+ext; n++; }
+  used.add(candidate.toLowerCase());
+  return candidate;
+}
 function backupAllPlaylists(){
   if(state.playlists.length===0){ toastDone('No playlists to back up yet', false, true); return; }
-  const obj = { reelPlaylist:true, version:1, app:'Reel', type:'backup', exportedAt:new Date().toISOString(), playlists: state.playlists.map(playlistToObj) };
-  if(downloadJSON(obj, 'Reel-playlists-backup.json')){
-    Log.info('Backed up '+state.playlists.length+' playlist(s) to file');
-    toastDone('Backed up '+pluralize(state.playlists.length,'playlist'));
-  }else{ toastDone('Couldn\u2019t save the backup', false, true); }
+  const enc = new TextEncoder();
+  const used = new Set();
+  const exportedAt = new Date().toISOString();
+  const entries = state.playlists.map(p=>{
+    const obj = { reelPlaylist:true, version:1, app:'Reel', type:'playlist', exportedAt, playlist:playlistToObj(p) };
+    return { name: zipUniqueName(safeFileName(p.name), '.json', used), bytes: enc.encode(JSON.stringify(obj, null, 2)) };
+  });
+  try{
+    const blob = buildZipBlob(entries);
+    const stamp = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+    triggerBlobDownload(blob, 'Reel-playlists-backup-'+stamp+'.zip');
+    Log.info('Backed up '+state.playlists.length+' playlist(s) to a zip ('+entries.length+' files)');
+    toastDone('Backed up '+pluralize(state.playlists.length,'playlist')+' to a zip file');
+  }catch(e){
+    Log.warn('Zip backup failed: '+(e&&e.message?e.message:e));
+    toastDone('Couldn\u2019t create the backup zip', false, true);
+  }
 }
 function matchSongToLibrary(entry){
   if(!entry) return null;
@@ -6738,12 +6849,8 @@ async function copyLogToClipboard(){
 function downloadLog(){
   try{
     const blob = new Blob([logRowsToText(buildLogRows())], {type:'text/plain'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
     const stamp = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
-    a.href = url; a.download = 'reel-log-'+stamp+'.txt';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+    triggerBlobDownload(blob, 'reel-log-'+stamp+'.txt');
     toastDone('Log saved');
   }catch(e){ toastDone('Couldn’t save log file', false, true); }
 }

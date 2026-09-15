@@ -1350,8 +1350,26 @@ const state = {
   routeDiag: false,         // when true, measure AudioContext.outputLatency to detect real route changes
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.7.4';
+const APP_VERSION = '3.7.6';
 const CHANGELOG = [
+  { v:'3.7.6', date:'Sep 14, 2026', items:[
+    'Found the pauses. They were in the previous debug log the whole time \u2014 not as events, but as arithmetic. "We Didn\u2019t Start the Fire" is 290.83 seconds long and took 295.65 seconds of wall-clock time to play: 4.8 seconds of audio never happened, with NO pause event firing at any point. The same session lost 14.2s on "96 Tears" (7.4% of its runtime) and 10.1s on "Todbereit" (4.4%) \u2014 29 seconds lost across three songs. So the interruptions are real, repeated, and invisible to every event listener in the app, which is exactly why nothing showed up.',
+    'This also explains the "it resumes the moment I reopen the app" report: audio is being briefly suspended and restarted without the media element ever dispatching a pause, so there has never been anything for the app to react to or log.',
+    'New: continuous drift detection, which needs no lifecycle event at all. On every timeupdate it compares wall-clock time elapsed against how far the audio position actually moved; genuinely playing audio advances in lockstep with the clock, so any real shortfall means playback stopped regardless of what the element reports. Each occurrence is logged as "SILENT AUDIO STOP" with the exact duration lost.',
+    'Worth being clear about why this catches what v3.7.5 could not: v3.7.5\u2019s gap analysis only ran when the app returned to the foreground, and the entire reported session was vis=hidden \u2014 the app was never brought forward once, so it would never have fired. The new check is also inherently immune to JavaScript being frozen: if JS freezes for 5s while audio plays fine, wall-clock and audio both advance 5s and nothing is reported; if audio was actually stopped, the shortfall is caught on the first timeupdate after it resumes.',
+    'New: per-track audio accounting. When each track finishes or is replaced, the app now logs the wall-clock time against actual audio played, the total seconds lost, the percentage, and how many separate interruptions occurred \u2014 the exact figures that had to be worked out by hand to find this, now computed automatically. Runs always, not just while diagnostics are enabled, since a silent audio stop is a genuine playback fault rather than a diagnostic curiosity.',
+    'Recorded a confirmed limitation of the v3.7.4 output-latency probe: on a real device it reported a flat 16.0ms while genuinely playing over bluetooth \u2014 a speaker-like figure, nowhere near the ~178ms bluetooth should show. A probe context with nothing connected to it does not appear to follow the real playback route on this platform, so its readings are unproven and it now says so plainly in the log. Turning the equaliser on routes real playback audio through Web Audio and the probe measures that context instead, which is the way to test whether this signal can work here at all.',
+    'Seeks, rate changes and track starts are excluded from drift measurement, since each legitimately decouples audio position from wall-clock time and would otherwise register as a false interruption.',
+  ]},
+  { v:'3.7.5', date:'Sep 14, 2026', items:[
+    'Fixed the reason v3.7.4 captured nothing during a real run of pauses. Two separate faults, both in the diagnostics rather than in playback: route sampling ran on a timer, and Android throttles then freezes JavaScript timers in a backgrounded page \u2014 so the sampler stopped running at precisely the moment it was needed. And the debug log held entries in memory for 1.2 seconds before writing them, so anything pending when the page was frozen or discarded was lost before it ever reached storage. A backgrounded pause was therefore close to guaranteed to leave no trace.',
+    'Sampling is no longer driven by a timer. It now runs off the audio element\u2019s own timeupdate event, which is produced by the media pipeline and keeps firing while audio plays even when timers are throttled. If timeupdate stops, that absence is itself evidence that audio actually stopped.',
+    'Log writes are now near-immediate (250ms, down from 1200ms), warnings and errors write through instantly with no delay at all, and the log is force-flushed on every page-lifecycle exit \u2014 backgrounding, freeze, and pagehide \u2014 since any of those can be the last code that runs before Android suspends the page. Buffer raised from 800 to 2500 entries so a session with repeated backgrounding can\u2019t roll its own earliest evidence out of view.',
+    'New: gap analysis, the piece that addresses the "audio returns the instant I reopen the app" report directly. A heartbeat continuously records wall-clock time against audio position. When the page comes back from being backgrounded or frozen, it compares how much real time passed against how far the audio actually advanced, and states plainly whether audio kept playing or was silently stopped \u2014 e.g. "audio was NOT PLAYING for roughly 34.9s of that window." This reconstructs the one period that was previously completely invisible, because no JavaScript was running during it to observe anything.',
+    'New: full raw media-event trace (21 events \u2014 play, pause, waiting, stalled, suspend, emptied, abort, and the rest), plus explicit logging of every page-lifecycle transition: backgrounded, foregrounded, browser freeze, browser resume, pagehide, pageshow, and whether the page was discarded outright. Active while deep diagnostics are on.',
+    'New: the app now logs at boot whether it is running as a properly installed app or as an ordinary browser tab, and warns loudly if it\u2019s the latter. This has been a suspected factor in background-pausing since v3.6.0 with no way to confirm it \u2014 a home-screen shortcut runs as a plain Chrome tab and gets Chrome\u2019s full background throttling, while an installed app (WebAPK) is treated much more leniently.',
+    'Being straight about the limit here: a web app cannot prevent Android from suspending it in the background. Native players avoid this by running a foreground service, which browsers have no equivalent of, so this cannot be fixed from inside Reel \u2014 only reduced, by installing it as a real app and disabling battery optimisation for it. What this build does do is make it unambiguous from the log which is actually happening, so effort stops going into the wrong theory.',
+  ]},
   { v:'3.7.4', date:'Sep 14, 2026', items:[
     'Diagnostic build \u2014 no change to what "Stop on media change" actually decides. Adds a new, completely different signal for detecting a real output-route change, so the next debug log can show whether it works on this specific phone before any behavior is built on top of it.',
     'Background, established from documentation rather than guesswork: native Android apps don\u2019t detect a headphone/Bluetooth disconnect at all \u2014 the OS broadcasts ACTION_AUDIO_BECOMING_NOISY directly to them the moment audio is about to reroute to the speaker. That single, unambiguous signal is why other players on the same phone reliably stop on a real disconnect without ever pausing at random. There is no web equivalent, which is the actual root reason this has been hard here and not there.',
@@ -1734,7 +1752,11 @@ function formatLogDelta(ms){
   return '+'+(ms/3600000).toFixed(1)+'h';
 }
 const Log = (()=>{
-  const MAX = 800;
+  // Raised from 800 in v3.7.5: the background/lifecycle forensics below and
+  // the verbose event trace produce far more lines, and a session where the
+  // app is repeatedly backgrounded is exactly the one that must not have its
+  // oldest evidence rolled out of the buffer before it can be read.
+  const MAX = 2500;
   let buf = [];
   let saveTimer = null;
   function push(level, msg){
@@ -1742,7 +1764,17 @@ const Log = (()=>{
       buf.push({ t:Date.now(), level, msg:String(msg) });
       if(buf.length>MAX) buf.splice(0, buf.length-MAX);
       clearTimeout(saveTimer);
-      saveTimer = setTimeout(()=>{ DB.set('debugLog', buf).catch(()=>{}); }, 1200);
+      // v3.7.5: this used to be a 1200ms debounce, which lost data in the one
+      // situation that matters most — Android freezing or discarding the page
+      // while backgrounded. Anything still sitting in memory at that moment
+      // was gone forever, which is very likely why a real backgrounded pause
+      // produced an empty log. Warnings and errors now write through
+      // immediately; everything else gets a much shorter window.
+      if(level==='warn' || level==='error'){
+        DB.set('debugLog', buf).catch(()=>{});
+      }else{
+        saveTimer = setTimeout(()=>{ DB.set('debugLog', buf).catch(()=>{}); }, 250);
+      }
     }catch(e){/* logging must never itself throw */}
   }
   return {
@@ -1750,6 +1782,11 @@ const Log = (()=>{
     warn:(msg)=>push('warn', msg),
     error:(msg)=>push('error', msg),
     clear:()=>{ buf=[]; DB.set('debugLog', []).catch(()=>{}); },
+    /* Write the buffer out right now, cancelling any pending debounce. Called
+       from every page-lifecycle exit point (pagehide, freeze, visibility
+       hidden) so nothing in memory is lost if Android freezes or discards the
+       page a moment later. */
+    flush:()=>{ try{ clearTimeout(saveTimer); DB.set('debugLog', buf).catch(()=>{}); }catch(e){} },
     entries:()=>buf.slice(),
     count:()=>buf.length,
     text:()=>{
@@ -3255,7 +3292,10 @@ async function playSong(id){
   // pairs with the "Playing" line's post-swap state below to show whether
   // the element was in a clean just-ended state or still busy with the
   // previous track when the new src was assigned.
+  // Close out the outgoing track's audio accounting before the src is swapped.
+  logTrackDriftSummary('track replaced');
   Log.info('Loading "'+s.title+'" \u00b7 pre-swap '+audioDiag());
+  resetDriftAccounting();
   stallLoggedForSrc = false;
   waitLoggedForSrc = false;
   posStateErrorLoggedForSrc = false;
@@ -3382,6 +3422,7 @@ audio.addEventListener('ended', ()=>{
   if(state.mode==='book'){ bookOnEnded(); return; }
   const s = state.library.get(state.currentId);
   Log.info('Track ended \u2014 "'+(s?s.title:'?')+'" \u00b7 '+audioDiag());
+  logTrackDriftSummary('track ended naturally');
   nextTrack(true);
 });
 /* ============================================================================
@@ -3827,6 +3868,7 @@ function startRouteProbe(){
     // silence and never touches the <audio> element's own playback path.
     if(routeProbeCtx.state==='suspended' && routeProbeCtx.resume) routeProbeCtx.resume().catch(()=>{});
     Log.info('Route probe: started a dedicated silent audio context for route measurement \u00b7 '+routeSnapshotText());
+    Log.warn('Route probe CAVEAT (confirmed from a real device log): a probe context with nothing connected to it reported a constant 16.0ms while the phone was genuinely playing over bluetooth \u2014 a speaker-like figure, not the ~178ms bluetooth is supposed to show. A disconnected context appears not to follow the real playback route on this platform, so treat its readings as unproven. Turning the equaliser ON routes actual playback audio through Web Audio, and this probe then measures THAT context instead \u2014 which is the way to find out whether outputLatency can track the route here at all.');
     return true;
   }catch(e){
     routeProbeFailed = true; routeProbeCtx = null;
@@ -3891,7 +3933,13 @@ function guessRouteFromLatency(latSec){
    arrive after the route has already settled. Sampling once a second and
    logging only on a meaningful move keeps the log readable while still
    catching the transition. */
-const ROUTE_SAMPLE_MS = 1000;
+/* Sampling cadence. NOTE (v3.7.5): this interval is now only a BACKUP for the
+   case where audio is paused (and so timeupdate isn't firing). The primary
+   driver is the audio element's own timeupdate event — see wireEventTrace —
+   because timers get throttled and then frozen in a backgrounded page, which
+   is exactly when a real disconnect is most likely to happen and was exactly
+   why v3.7.4 captured nothing. */
+const ROUTE_SAMPLE_MS = 2000;
 const ROUTE_CHANGE_THRESHOLD_MS = 15; // ignore ordinary jitter; a real route change should dwarf this
 let routeSampleTimer = null;
 let lastRouteLatency = null;
@@ -3944,6 +3992,279 @@ function setRouteDiag(on){
     stopRouteProbe();
   }
   persistPrefs();
+}
+
+/* ============================================================================
+   BACKGROUND / LIFECYCLE FORENSICS (v3.7.5)
+
+   The problem this solves: a real device run produced pauses that left NOTHING
+   in the debug log. Two causes, both mine:
+
+   1. Route sampling ran on setInterval. Android throttles and ultimately
+      freezes timers in a backgrounded page, so the sampler simply stopped
+      running at exactly the moment it was needed.
+   2. The log buffered entries in memory for 1.2s before writing. If the page
+      was frozen or discarded during that window, those entries never reached
+      storage at all.
+
+   Both are fixed. The key mechanism now is that sampling is driven by the
+   audio element's own 'timeupdate' event rather than a timer: timeupdate is
+   produced by the media pipeline, so it keeps firing while audio plays even
+   when JS timers are throttled. If timeupdate stops, that itself is evidence —
+   it means audio actually stopped, which is precisely what we're trying to
+   catch.
+
+   On top of that, a heartbeat records wall-clock time against audio position
+   on every timeupdate. When the page comes back from a freeze, comparing how
+   much wall-clock time passed against how far the audio actually advanced
+   reconstructs what happened while no JS was running at all — the one window
+   that was previously completely invisible.
+============================================================================ */
+let hbWallClock = 0;      // Date.now() at last heartbeat
+let hbAudioTime = 0;      // audio.currentTime at last heartbeat
+let hbWasPaused = true;
+let lastVisibilityChangeAt = Date.now();
+let backgroundEnteredAt = 0;
+
+function recordHeartbeat(){
+  hbWallClock = Date.now();
+  hbAudioTime = audio.currentTime || 0;
+  hbWasPaused = audio.paused;
+}
+
+/* Reconstructs a period during which JS may not have been running at all.
+   This is the single most valuable diagnostic in this build: it can tell the
+   difference between "audio kept playing fine while backgrounded" and "audio
+   was silently stopped for 34 seconds and only resumed when the app was
+   reopened" — which is exactly the symptom being reported, and which no event
+   listener could ever have captured, because no JS was running to hear it. */
+function analyzeGap(label){
+  if(!hbWallClock){ Log.info('Gap analysis ('+label+'): no prior heartbeat to compare against'); return; }
+  const now = Date.now();
+  const wallMs = now - hbWallClock;
+  const audioAdvanced = ((audio.currentTime||0) - hbAudioTime) * 1000;
+  const unaccounted = wallMs - audioAdvanced;
+  const rate = audio.playbackRate || 1;
+  const expected = wallMs * rate;
+  Log.warn('=== GAP ANALYSIS ('+label+') ===');
+  Log.warn('  Wall-clock elapsed since last heartbeat: '+(wallMs/1000).toFixed(2)+'s');
+  Log.warn('  Audio position advanced: '+(audioAdvanced/1000).toFixed(2)+'s (expected \u2248'+(expected/1000).toFixed(2)+'s at '+rate+'x if it never stopped)');
+  Log.warn('  State at last heartbeat: paused='+hbWasPaused+' t='+hbAudioTime.toFixed(2));
+  Log.warn('  State right now: '+audioDiag());
+  if(hbWasPaused){
+    Log.warn('  >>> VERDICT: audio was already paused before this gap \u2014 nothing to account for.');
+  }else if(unaccounted > 1500){
+    Log.warn('  >>> VERDICT: audio was NOT PLAYING for roughly '+(unaccounted/1000).toFixed(1)+'s of that window. '
+      +'It was playing when the gap started, so something stopped it while no JS was running \u2014 almost certainly Android suspending the page or taking audio focus, NOT a bluetooth route change.');
+  }else if(unaccounted < -1500){
+    Log.warn('  >>> VERDICT: audio advanced MORE than wall-clock time (odd \u2014 clock adjustment or a seek happened).');
+  }else{
+    Log.warn('  >>> VERDICT: audio played continuously through that window \u2014 no silent stop occurred.');
+  }
+  recordHeartbeat();
+}
+
+/* Raw event trace. Every media event the element can emit, logged compactly.
+   Several of these already have their own richer handlers elsewhere; these
+   lines are deliberately terse and prefixed EVT so the two don't get confused
+   — the point here is a complete, ordered trace with nothing missing, which
+   is what reconstructing an unexplained pause actually requires. */
+const TRACED_MEDIA_EVENTS = ['abort','canplay','canplaythrough','durationchange','emptied','ended',
+  'error','loadeddata','loadedmetadata','loadstart','pause','play','playing','progress','ratechange',
+  'seeked','seeking','stalled','suspend','volumechange','waiting'];
+let lastTimeupdateLogAt = 0;
+function wireEventTrace(){
+  for(const name of TRACED_MEDIA_EVENTS){
+    audio.addEventListener(name, ()=>{
+      if(!state.routeDiag) return; // verbose trace only while deep diagnostics are on
+      Log.info('EVT '+name+' \u00b7 t='+(audio.currentTime||0).toFixed(2)
+        +' paused='+audio.paused+' ready='+audio.readyState+' net='+audio.networkState
+        +' vis='+(document.visibilityState||'?')
+        +(state.routeDiag? ' '+routeSnapshotText() : ''));
+    });
+  }
+  // timeupdate drives the heartbeat ALWAYS (cheap, and it's what makes gap
+  // analysis possible), but only logs occasionally so it can't flood.
+  audio.addEventListener('timeupdate', ()=>{
+    // Drift MUST be checked before the heartbeat advances — it compares the
+    // current position against the previous heartbeat. This runs
+    // unconditionally (not gated on the diagnostics toggle), because a silent
+    // audio stop is a real playback fault, not a diagnostic curiosity, and it
+    // is otherwise completely undetectable.
+    checkDrift();
+    if(trackPlayStartWall === 0 && !audio.paused){
+      trackPlayStartWall = Date.now();
+      trackPlayStartCt = audio.currentTime || 0;
+    }
+    recordHeartbeat();
+    if(state.routeDiag) sampleRoute();   // background-resilient route sampling
+    if(state.routeDiag && Date.now()-lastTimeupdateLogAt > 15000){
+      lastTimeupdateLogAt = Date.now();
+      Log.info('EVT timeupdate (heartbeat, logged every 15s) \u00b7 '+audioDiag());
+    }
+  });
+  // A seek legitimately decouples audio position from wall-clock time, so
+  // drift must not be measured across one.
+  audio.addEventListener('seeking', ()=>suppressDrift(2000));
+  audio.addEventListener('seeked',  ()=>suppressDrift(2000));
+  audio.addEventListener('ratechange', ()=>suppressDrift(1500));
+}
+
+/* Page lifecycle. 'freeze'/'resume' are the explicit signals Chrome gives when
+   it suspends a backgrounded page; visibilitychange and pagehide/pageshow
+   cover the paths that don't fire those. Every one of them flushes the log,
+   because any of them can be the last code that runs before the page is
+   frozen or discarded. */
+function wireLifecycleForensics(){
+  document.addEventListener('visibilitychange', ()=>{
+    const now = Date.now();
+    const sinceLast = now - lastVisibilityChangeAt;
+    lastVisibilityChangeAt = now;
+    if(document.visibilityState === 'hidden'){
+      backgroundEnteredAt = now;
+      Log.warn('APP BACKGROUNDED (was visible for '+(sinceLast/1000).toFixed(1)+'s) \u00b7 '+audioDiag());
+      recordHeartbeat();
+      Log.flush();   // last chance to persist before Android may freeze us
+    }else{
+      const bgFor = backgroundEnteredAt ? (now - backgroundEnteredAt) : 0;
+      Log.warn('APP FOREGROUNDED (was backgrounded for '+(bgFor/1000).toFixed(1)+'s) \u00b7 '+audioDiag());
+      analyzeGap('returned to foreground');
+    }
+  });
+  // Chrome's Page Lifecycle API — the definitive "you were suspended" signal.
+  document.addEventListener('freeze', ()=>{
+    Log.warn('PAGE FROZEN by the browser \u2014 no JavaScript will run until resumed. '
+      +'Any pause that happens from here on cannot be logged as it occurs; it will be reconstructed by gap analysis on resume. \u00b7 '+audioDiag());
+    recordHeartbeat();
+    Log.flush();
+  });
+  document.addEventListener('resume', ()=>{
+    Log.warn('PAGE RESUMED after being frozen by the browser \u00b7 '+audioDiag());
+    analyzeGap('page resume after freeze');
+  });
+  window.addEventListener('pagehide', (e)=>{
+    Log.warn('PAGE HIDE (persisted='+(e && e.persisted)+') \u00b7 '+audioDiag());
+    recordHeartbeat();
+    Log.flush();
+  });
+  window.addEventListener('pageshow', (e)=>{
+    Log.warn('PAGE SHOW (from back/forward cache='+(e && e.persisted)+') \u00b7 '+audioDiag());
+    analyzeGap('pageshow');
+  });
+  // If the page was discarded entirely and rebuilt, say so plainly — that
+  // means the previous session's in-memory state is simply gone.
+  try{
+    if(document.wasDiscarded){
+      Log.warn('This page was DISCARDED by the browser and reloaded from scratch \u2014 the previous session was terminated, not merely paused.');
+    }
+  }catch(e){}
+}
+
+/* Records how the app is actually running. A home-screen "shortcut" runs as an
+   ordinary Chrome tab and gets Chrome's full background throttling; a properly
+   installed PWA (WebAPK) gets meaningfully more lenient treatment. This has
+   been a suspected factor in the background-pausing reports since v3.6.0, and
+   until now there was no way to confirm which mode was actually in use. */
+function logInstallContext(){
+  let mode = 'browser tab (NOT installed as an app)';
+  try{
+    if(window.matchMedia('(display-mode: standalone)').matches) mode = 'standalone (installed as a real app \u2014 good)';
+    else if(window.matchMedia('(display-mode: fullscreen)').matches) mode = 'fullscreen (installed)';
+    else if(window.matchMedia('(display-mode: minimal-ui)').matches) mode = 'minimal-ui (installed)';
+    else if(window.navigator.standalone) mode = 'standalone (iOS-style)';
+  }catch(e){}
+  Log.info('Display mode: '+mode);
+  if(mode.indexOf('NOT installed') !== -1){
+    Log.warn('IMPORTANT: Reel is running as a plain browser tab, not an installed app. Android applies Chrome\u2019s own background throttling in this mode, which is a known cause of playback being suspended in the background. Re-add it to the home screen using Chrome\u2019s "Install" option (not "Create shortcut") and disable battery optimisation for it.');
+  }
+}
+
+/* ============================================================================
+   CONTINUOUS DRIFT DETECTION (v3.7.6)
+
+   Confirmed from a real device log, by arithmetic rather than by any event:
+   "We Didn't Start the Fire" is 290.83s long and took 295.65s of wall-clock
+   time to play. 4.8 seconds of audio simply never happened, and NOT ONE pause
+   event fired. Two other tracks in the same session lost 14.2s and 10.1s
+   (7.4% and 4.4% of their runtime). So the interruptions are real, repeated,
+   and completely invisible to every event listener this app has.
+
+   v3.7.5's gap analysis would still have missed all of it: that only runs when
+   the app returns to the foreground, and this entire session was vis=hidden —
+   the app was never brought forward, so it would never have fired once.
+
+   This check needs no lifecycle event at all. On every timeupdate it compares
+   how much wall-clock time passed against how far the audio actually moved.
+   Audio that is genuinely playing advances in lockstep with the clock; any
+   meaningful shortfall means playback stopped, whatever the element claims.
+
+   It is also inherently robust to JavaScript being frozen, which matters here.
+   If JS is frozen for 5s while audio keeps playing, wall and audio both
+   advance 5s and nothing is reported. If audio was stopped for those 5s, the
+   audio position doesn't move and the shortfall is caught on the very next
+   timeupdate after playback resumes.
+============================================================================ */
+const DRIFT_THRESHOLD_MS = 500;   // below this is ordinary timeupdate jitter
+let driftSuppressUntil = 0;       // seeks legitimately break the wall/audio relationship
+let trackLostMs = 0;              // running total of lost audio for the current track
+let trackDriftEvents = 0;
+let trackPlayStartWall = 0;
+let trackPlayStartCt = null;
+
+function suppressDrift(ms){ driftSuppressUntil = Date.now() + (ms||1500); }
+
+/* Called at the start of every track so per-track accounting starts clean. */
+function resetDriftAccounting(){
+  trackLostMs = 0;
+  trackDriftEvents = 0;
+  trackPlayStartWall = 0;
+  trackPlayStartCt = null;
+  suppressDrift(1500); // ignore the decode/startup window
+}
+
+function checkDrift(){
+  const now = Date.now();
+  if(audio.paused || hbWasPaused){ return; }        // only meaningful while actually playing
+  if(now < driftSuppressUntil){ return; }
+  if(!hbWallClock){ return; }
+  const wallMs = now - hbWallClock;
+  if(wallMs < 200) return;                          // too short to judge
+  const rate = audio.playbackRate || 1;
+  const audioMs = ((audio.currentTime||0) - hbAudioTime) * 1000;
+  const expectedMs = wallMs * rate;
+  const shortfall = expectedMs - audioMs;
+  if(audioMs < 0) return;                           // a seek or track change slipped through
+  if(shortfall >= DRIFT_THRESHOLD_MS){
+    trackLostMs += shortfall;
+    trackDriftEvents++;
+    // Anchor the running total against when this track actually started, so
+    // the line reads as "this track has lost N seconds so far" rather than
+    // just an isolated blip.
+    let pctTxt = '';
+    if(trackPlayStartWall && trackPlayStartCt != null){
+      const elapsedWall = now - trackPlayStartWall;
+      if(elapsedWall > 0) pctTxt = ' \u00b7 track has lost '+(trackLostMs/1000).toFixed(2)+'s total so far ('+(trackLostMs/elapsedWall*100).toFixed(1)+'% of elapsed time, over '+trackDriftEvents+' interruption'+(trackDriftEvents===1?'':'s')+')';
+    }
+    Log.warn('*** SILENT AUDIO STOP: '+(shortfall/1000).toFixed(2)+'s of audio did not play '
+      +'(wall '+(wallMs/1000).toFixed(2)+'s vs audio '+(audioMs/1000).toFixed(2)+'s) '
+      +'\u2014 NO pause event fired, the element still reports paused='+audio.paused
+      +pctTxt+' \u00b7 '+audioDiag());
+  }
+}
+
+/* Per-track verdict, logged when a track finishes or is replaced. This is the
+   number that made the problem visible in the first place, so the app now
+   computes it itself instead of requiring it to be worked out by hand. */
+function logTrackDriftSummary(why){
+  if(!trackPlayStartWall || trackPlayStartCt == null) return;
+  const wallMs = Date.now() - trackPlayStartWall;
+  const audioMs = ((audio.currentTime||0) - trackPlayStartCt) * 1000;
+  const lost = wallMs - audioMs;
+  if(wallMs < 3000) return; // too short to be meaningful
+  const pct = wallMs>0 ? (lost/wallMs*100) : 0;
+  const line = 'TRACK AUDIO ACCOUNTING ('+why+'): wall '+(wallMs/1000).toFixed(2)+'s vs audio '+(audioMs/1000).toFixed(2)+'s \u2014 '
+    +(lost/1000).toFixed(2)+'s lost ('+pct.toFixed(1)+'%), '+trackDriftEvents+' interruption'+(trackDriftEvents===1?'':'s')+' detected';
+  if(lost >= 1000) Log.warn('*** '+line); else Log.info(line);
 }
 
 function audioDiag(){
@@ -5768,6 +6089,10 @@ async function boot(){
   Log.info('Reel v'+APP_VERSION+' booting — '+navigator.userAgent);
   Log.info('MediaSession API available: '+('mediaSession' in navigator)+' (lock screen controls need this to be true)');
   registerServiceWorker();
+  logInstallContext();
+  wireEventTrace();
+  wireLifecycleForensics();
+  recordHeartbeat();
   initDeviceSnapshot();
   wire();
   setCapabilityNote();
@@ -6172,14 +6497,14 @@ function renderSettings(){
   html += '<div class="set-group"><h3>Advanced</h3><div class="set-card">'
     + '<button class="set-row" data-set="log"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></div><div class="sm"><div class="st">Debug log</div><div class="ss">'+Log.count()+' entries · actions, imports, playback &amp; errors</div></div>'+chev+'</button>'
     + '<button class="set-row" data-toggle="routediag"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></div>'
-    + '<div class="sm"><div class="st">Audio route diagnostics</div><div class="ss">Measure output latency to detect a real Bluetooth/cable disconnect. Diagnostic only \u2014 changes nothing about playback.</div></div>'
+    + '<div class="sm"><div class="st">Deep playback diagnostics</div><div class="ss">Full event trace, background/freeze forensics and output-latency route measurement. Diagnostic only \u2014 changes nothing about playback.</div></div>'
     + '<div class="tgl'+(state.routeDiag?' on':'')+'"><span></span></div></button>'
     + '<button class="set-row" data-set="checkformats"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg></div><div class="sm"><div class="st">Check library for mismatched files</div><div class="ss">Find songs whose actual content doesn\'t match their file extension</div></div>'+chev+'</button>'
     + '<button class="set-row" data-set="dupfind"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></div><div class="sm"><div class="st">Find duplicate songs</div><div class="ss">Match by title and audio content, not just filename</div></div>'+chev+'</button>'
     + '<button class="set-row" data-set="unplayablefind"><div class="si"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg></div><div class="sm"><div class="st">Remove unplayable songs</div><div class="ss">Test every song and delete the ones the browser can\'t decode</div></div>'+chev+'</button>'
     + '</div>'
     + (state.routeDiag
-        ? '<div class="set-note" style="margin-top:10px;color:var(--amber);">Route diagnostics are ON. To capture a disconnect: play a song over Bluetooth, let it run well past 2 seconds, then turn Bluetooth off \u2014 then Debug log \u2192 Save and share it. Turn this back off when you\u2019re done; it keeps a silent audio context open to take the measurement.</div>'
+        ? '<div class="set-note" style="margin-top:10px;color:var(--amber);">Deep diagnostics are ON. Gap analysis and lifecycle logging now work even while the app is backgrounded. Play a song, background the app or turn Bluetooth off, then reopen and check Debug log \u2192 Save. Look for GAP ANALYSIS and ROUTE LATENCY CHANGED lines. Turn this back off when done \u2014 it keeps a silent audio context open and writes a lot of log lines.</div>'
         : '')
     + '<div class="set-note">The log stays on your device and is never sent anywhere. Useful if something isn\'t working right and you want to see exactly what happened.</div>'
     + '<div class="set-note" style="margin-top:10px;">A song can fail to play because it isn\'t really what its file extension claims \u2014 e.g. an .mp3 that\'s actually a renamed .wma from a conversion that didn\'t fully work. This check reads just the first few bytes of every song (never the whole file) and reports any mismatches to the debug log. It only reports \u2014 nothing gets changed, removed, or converted.</div>'
@@ -6676,8 +7001,10 @@ async function playBookPart(partIndex, seekTime, autoplay){
   }
   if(currentObjectUrl){ try{ URL.revokeObjectURL(currentObjectUrl); }catch(e){} }
   currentObjectUrl = URL.createObjectURL(file);
+  logTrackDriftSummary('chapter replaced');
   pendingBookSeek = seekTime||0;
   audio.src = currentObjectUrl;
+  resetDriftAccounting();
   audio.playbackRate = state.bookSpeed;
   intentionalPause = false;
   renderBookPlayer();

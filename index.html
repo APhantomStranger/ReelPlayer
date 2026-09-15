@@ -537,6 +537,23 @@
 
   /* ---------- neon accents ---------- */
   .brand h1 .dot{box-shadow:0 0 14px 2px var(--amber);}
+  /* Install-status badge (v3.7.8): a quiet, always-visible confirmation of
+     whether the running instance can actually get the background-audio
+     treatment an installed app gets, rather than that being invisible
+     until someone goes digging in the debug log. */
+  .install-badge{
+    width:34px;height:34px;border-radius:50%;flex:0 0 auto;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .install-badge svg{width:20px;height:20px;}
+  .install-badge.ok{
+    color:var(--ok);background:rgba(87,245,160,.14);
+    box-shadow:0 0 12px 1px rgba(87,245,160,.45);
+  }
+  .install-badge.bad{
+    color:var(--danger);background:rgba(255,92,122,.14);
+    box-shadow:0 0 12px 1px rgba(255,92,122,.45);
+  }
   nav button.active svg{filter:drop-shadow(0 0 7px rgba(var(--accent-rgb),.7));}
   .seek-fill{box-shadow:0 0 10px rgba(var(--accent-rgb),.6);}
   .mini-prog span{box-shadow:0 0 8px rgba(var(--accent-rgb),.6);}
@@ -628,6 +645,8 @@
   @media (orientation:landscape) and (max-height:900px) and (max-aspect-ratio: 3/2){
     header{padding:10px 20px 8px;gap:10px;}
     .brand h1{font-size:28px;}
+    .install-badge{width:24px;height:24px;}
+    .install-badge svg{width:15px;height:15px;}
     .icon-btn{width:46px;height:46px;}
     .icon-btn svg{width:22px;height:22px;}
     .search{height:48px;}
@@ -900,7 +919,7 @@
 <div id="app">
   <header>
     <div class="brand">
-      <h1><span class="dot"></span>Reel</h1>
+      <h1><span class="dot"></span>Reel<span class="install-badge" id="installBadge" title=""></span></h1>
       <div class="hdr-actions">
         <button class="icon-btn" id="btnSettings" title="Settings" aria-label="Settings">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -1350,8 +1369,15 @@ const state = {
   routeDiag: false,         // when true, measure AudioContext.outputLatency to detect real route changes
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.7.7';
+const APP_VERSION = '3.7.8';
 const CHANGELOG = [
+  { v:'3.7.8', date:'Sep 15, 2026', items:[
+    'Found why installing kept falling back to a shortcut: Chrome\u2019s menu says "Install and create shortcut" \u2192 "Install app" specifically when it CANNOT build a real installed app (a WebAPK) and is falling back to a bookmark that still runs as a plain browser tab \u2014 when Chrome can build a real one, the option just says "Install", with no "shortcut" wording at all. Loading the app via GitHub\u2019s raw file viewer doesn\u2019t serve the manifest/icons/service-worker at reachable paths, so Chrome\u2019s installability check was always failing and silently taking the fallback path. This isn\u2019t fixable from inside the HTML file \u2014 it requires actually serving the app from real web hosting (e.g. GitHub Pages) with all five files (index.html, manifest.json, sw.js, icon-192.png, icon-512.png) alongside each other.',
+    'New: a status badge next to the "Reel" title \u2014 a green check when running installed as a real app, a red X when running as a plain browser tab. This used to only be visible by digging into the debug log after the fact; now it\u2019s always on screen, since whether background audio can work at all hinges entirely on this one fact.',
+    'New: real icon-192.png and icon-512.png, matching the app\u2019s own neon-green music-note motif used throughout the UI. Their absence was one of the concrete reasons the installability check couldn\u2019t pass before.',
+    'Log buffer reduced back to 500 entries (from 2500). The larger buffer was sized for the fully-instrumented, repeatedly-backgrounded sessions used to hunt the root cause; that cause is confirmed now, so ordinary use doesn\u2019t need that much headroom.',
+    'Internal: display-mode detection (installed vs. browser tab) now lives in exactly one function, read by both the debug-log line and the new header badge, rather than two separate implementations that could quietly drift apart \u2014 the same class of bug the log Copy button had in v3.7.7.',
+  ]},
   { v:'3.7.7', date:'Sep 14, 2026', items:[
     'Fixed Copy and Save producing a different log than the one on screen. They were built from a separate, independently-written function (Log.text()) that walked entries oldest-first with a full date on every line, while the screen shows newest-first with the date only in a separator \u2014 same entries, two unrelated presentations. Copy and Save now render from the exact same ordering/grouping function the screen uses, so there is no longer a second implementation that can drift out of sync with the first.',
     'The one deliberate addition beyond a literal screen copy: WARN/ERROR lines are distinguished on screen only by text colour, which a plain-text copy can\u2019t carry \u2014 so the level is spelled out on each line in the copied/saved text instead of silently losing that signal the moment it leaves the app.',
@@ -1747,11 +1773,12 @@ const DB = (() => {
         slips through uncaught.
 ============================================================================ */
 const Log = (()=>{
-  // Raised from 800 in v3.7.5: the background/lifecycle forensics below and
-  // the verbose event trace produce far more lines, and a session where the
-  // app is repeatedly backgrounded is exactly the one that must not have its
-  // oldest evidence rolled out of the buffer before it can be read.
-  const MAX = 2500;
+  // v3.7.8: reduced back down from 2500. The 2500 ceiling was sized for the
+  // fully-instrumented, repeatedly-backgrounded sessions used while hunting
+  // the root cause; that's confirmed now (Android suspending a non-installed
+  // tab's audio in the background), so the buffer no longer needs to be
+  // that generous for ordinary use.
+  const MAX = 500;
   let buf = [];
   let saveTimer = null;
   function push(level, msg){
@@ -4139,19 +4166,67 @@ function wireLifecycleForensics(){
    ordinary Chrome tab and gets Chrome's full background throttling; a properly
    installed PWA (WebAPK) gets meaningfully more lenient treatment. This has
    been a suspected factor in the background-pausing reports since v3.6.0, and
-   until now there was no way to confirm which mode was actually in use. */
-function logInstallContext(){
-  let mode = 'browser tab (NOT installed as an app)';
+   until now there was no way to confirm which mode was actually in use.
+
+   v3.7.8: this used to be the only place display mode was computed. Now the
+   header badge needs the same answer, so the detection itself lives in ONE
+   function (detectDisplayMode) and both the log line and the badge just
+   read its result — deliberately not two independent implementations that
+   could quietly drift apart, which is exactly what happened to the log
+   Copy button in v3.7.7. */
+function detectDisplayMode(){
   try{
-    if(window.matchMedia('(display-mode: standalone)').matches) mode = 'standalone (installed as a real app \u2014 good)';
-    else if(window.matchMedia('(display-mode: fullscreen)').matches) mode = 'fullscreen (installed)';
-    else if(window.matchMedia('(display-mode: minimal-ui)').matches) mode = 'minimal-ui (installed)';
-    else if(window.navigator.standalone) mode = 'standalone (iOS-style)';
+    if(window.matchMedia('(display-mode: standalone)').matches) return 'standalone';
+    if(window.matchMedia('(display-mode: fullscreen)').matches) return 'fullscreen';
+    if(window.matchMedia('(display-mode: minimal-ui)').matches) return 'minimal-ui';
+    if(window.navigator.standalone) return 'standalone';
   }catch(e){}
-  Log.info('Display mode: '+mode);
-  if(mode.indexOf('NOT installed') !== -1){
+  return 'browser';
+}
+function isInstalledDisplayMode(mode){ return mode==='standalone' || mode==='fullscreen' || mode==='minimal-ui'; }
+const DISPLAY_MODE_LOG_LABELS = {
+  standalone: 'standalone (installed as a real app \u2014 good)',
+  fullscreen: 'fullscreen (installed)',
+  'minimal-ui': 'minimal-ui (installed)',
+  browser: 'browser tab (NOT installed as an app)',
+};
+function logInstallContext(){
+  const mode = detectDisplayMode();
+  Log.info('Display mode: '+(DISPLAY_MODE_LOG_LABELS[mode]||mode));
+  if(!isInstalledDisplayMode(mode)){
     Log.warn('IMPORTANT: Reel is running as a plain browser tab, not an installed app. Android applies Chrome\u2019s own background throttling in this mode, which is a known cause of playback being suspended in the background. Re-add it to the home screen using Chrome\u2019s "Install" option (not "Create shortcut") and disable battery optimisation for it.');
   }
+}
+/* The header badge: a green check when running installed/standalone, a red
+   X when running as a plain browser tab. Deliberately always visible, not
+   tucked in Settings — whether background audio can work at all hinges on
+   this, so it shouldn't require opening the debug log to find out. */
+function updateInstallBadge(){
+  const el = $('installBadge');
+  if(!el) return;
+  const mode = detectDisplayMode();
+  if(isInstalledDisplayMode(mode)){
+    el.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+    el.className = 'install-badge ok';
+    el.title = 'Installed as an app \u2014 good. Background playback gets more lenient treatment from Android.';
+  }else{
+    el.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+    el.className = 'install-badge bad';
+    el.title = 'Running as a browser tab, not installed. Android will throttle background playback \u2014 install via Chrome\u2019s "Install" option, not "Create shortcut".';
+  }
+}
+/* display-mode CAN change live (e.g. the tab that just installed the app
+   gets relaunched standalone) without a full reload of this page in some
+   flows, so this is wired as a real change listener rather than a
+   boot-only check. */
+function wireInstallBadge(){
+  updateInstallBadge();
+  try{
+    const mql = window.matchMedia('(display-mode: standalone)');
+    const onChange = ()=>{ updateInstallBadge(); logInstallContext(); };
+    if(mql.addEventListener) mql.addEventListener('change', onChange);
+    else if(mql.addListener) mql.addListener(onChange); // older WebView fallback
+  }catch(e){}
 }
 
 /* ============================================================================
@@ -6065,6 +6140,7 @@ async function boot(){
   Log.info('MediaSession API available: '+('mediaSession' in navigator)+' (lock screen controls need this to be true)');
   registerServiceWorker();
   logInstallContext();
+  wireInstallBadge();
   wireEventTrace();
   wireLifecycleForensics();
   recordHeartbeat();

@@ -1,17 +1,17 @@
 {
   "name": "Reel",
   "short_name": "Reel",
-  "description": "A self-contained offline music player.",
+  "description": "A fast, private music and audiobook player for your own library \u2014 built to run entirely on your device, fully offline.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "id": "./index.html",
   "display": "standalone",
-  "orientation": "portrait-primary",
+  "display_override": ["standalone", "minimal-ui", "browser"],
   "background_color": "#000000",
   "theme_color": "#000000",
-  "start_url": ".",
-  "scope": ".",
-  "categories": ["music", "entertainment"],
+  "orientation": "any",
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
   ]
 }

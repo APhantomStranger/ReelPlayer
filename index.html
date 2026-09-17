@@ -1106,6 +1106,11 @@
     </div>
 
     <audio id="audio" preload="metadata"></audio>
+    <!-- Second element for gapless transitions (v3.8.0). The next track is
+         decoded into whichever element is on standby while the current one
+         is still playing, so switching tracks costs no silent gap. See the
+         DUAL AUDIO ELEMENT section in the script for why that matters. -->
+    <audio id="audioB" preload="metadata"></audio>
   </div>
 </div>
 
@@ -1370,8 +1375,16 @@ const state = {
   routeDiag: false,         // when true, measure AudioContext.outputLatency to detect real route changes
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.7.9';
+const APP_VERSION = '3.8.0';
 const CHANGELOG = [
+  { v:'3.8.0', date:'Sep 17, 2026', items:[
+    'Gapless track transitions, built to attack the background-stall problem at what the logs point to as its source. Reel now uses two audio elements instead of one: the next track is fully decoded into an idle element while the current one is still playing, and at the transition the ready element simply starts and the two swap roles. Previously every track change tore down and rebuilt a single element, leaving a real silent window \u2014 measured at ~610ms in an actual device log between "ended" and the next "Playing".',
+    'Why that window matters, from two real incidents rather than theory: tracks that STARTED while the app was backgrounded played for 9.81s and 9.82s respectively before stopping dead for 32.02s and 33.89s \u2014 no pause event, no waiting, no stalled, no events at all, meaning JavaScript itself had stopped running. A track that started while the app was VISIBLE played 378 seconds straight through in the background with 0.2% loss and zero interruptions. Two stalls beginning 9.81s and 9.82s after their track began is a timer, not resource contention; the working theory is that Chrome keeps a backgrounded page alive while it is audibly playing, and each track change handed it a silent moment to classify the page as freezable.',
+    'Stated plainly: this is a hypothesis-driven fix. The 9.8s pattern is real and precisely reproducible across two incidents, but n=2, and removing the silent gap is a strong candidate rather than a proven cure. If the next backgrounded drive still shows SILENT AUDIO STOP lines, the theory is wrong and the log will say so.',
+    'Audiobook chapter changes go through the same swap \u2014 a chapter boundary is exactly as capable of handing Chrome a silent window as a track boundary.',
+    'The next track is staged immediately when the current one starts, rather than near its end, specifically so the work happens while the app is most likely still awake instead of depending on a timer firing inside a backgrounded page \u2014 which is the exact thing that can\u2019t be relied on here.',
+    'Supporting changes the dual-element engine required: every playback event listener now binds to both elements and ignores whichever one isn\u2019t active (otherwise the standby element\u2019s own load/pause traffic would corrupt the drift accounting and pause-reason tracking added in 3.7.x); volume and playback speed apply to both elements so a swap can never change loudness or speed mid-listen; the equaliser routes both elements through its filter chain, so it can\u2019t end up applying to only every other track; and object URLs are tracked per element so revoking the outgoing track\u2019s source can never pull the file out from under the track about to play.',
+  ]},
   { v:'3.7.9', date:'Sep 15, 2026', items:[
     'The Playlists tab\u2019s backup button is now "Back up all playlists" and produces a single .zip containing one .json file per playlist, instead of one combined file \u2014 so each playlist is its own file to browse, archive, or hand off individually, and each one is independently importable on its own the same way a single playlist export already is. Moved to its own full-width row since the new label no longer fits comfortably next to Import.',
     'The zip is built entirely in-app with no external library \u2014 a small hand-written writer (uncompressed/STORED entries, which is all plain JSON text needs), keeping Reel exactly as dependency-free as it already was for ID3 tags, audio-format sniffing, and fingerprinting. Verified against a real unzip tool before shipping, not just assumed to work.',
@@ -2826,9 +2839,96 @@ function jumpToLetterBulkAdd(letter){
 /* ============================================================================
    Playback engine
 ============================================================================ */
-const audio = $('audio');
+/* ============================================================================
+   DUAL AUDIO ELEMENT / GAPLESS TRANSITIONS (v3.8.0)
+
+   Why this exists, from real device logs rather than theory. Two separate
+   incidents, two days apart, on different songs, produced an almost
+   identical signature: a track that STARTED while the app was backgrounded
+   played for 9.81s and 9.82s respectively, then stopped dead for 32.02s and
+   33.89s, with no pause event, no waiting, no stalled — no events at all,
+   meaning JavaScript itself wasn't running. Meanwhile a track that started
+   while the app was VISIBLE played 378 seconds straight through in the
+   background with 0.2% loss and zero interruptions.
+
+   Two stalls beginning 9.81s and 9.82s after their track started is a timer,
+   not resource contention. Working theory: Chrome keeps a backgrounded page
+   alive while it is audibly playing, and every track change left a genuine
+   silent window (~610ms measured between 'ended' and the next 'Playing')
+   during which the page looks silent and becomes eligible to be frozen.
+
+   The fix is to remove the silent window. Instead of tearing down and
+   reloading one element, the next track is decoded into a second, idle
+   element ahead of time; at the transition the already-buffered element is
+   started and the roles swap, so the output is continuous.
+
+   Design notes that matter for everything below:
+   - `audio` is now a LET that always points at the ACTIVE element. Every
+     existing reference in this file (currentTime, duration, play, pause,
+     src, volume...) therefore follows the active element automatically
+     with no change at the call site.
+   - Listeners are bound ONCE to BOTH elements via onAudio(), and ignore
+     events coming from the element that isn't currently active. Without
+     that guard the standby element's own loadstart/canplay/pause traffic
+     would be indistinguishable from the real playback element's, which
+     would corrupt the drift accounting and the pause/resume reasoning that
+     v3.7.x is built on.
+============================================================================ */
+const audioA = $('audio');
+const audioB = $('audioB');
+const AUDIO_ELEMENTS = [audioA, audioB];
+let audio = audioA;          // the ACTIVE element — every audio.* call site follows this
+let standbyAudio = audioB;   // the idle element used to pre-decode the next track
+/* Object URL owned by each element, tracked per element so revoking the
+   outgoing track's URL can never pull the file out from under the element
+   that's about to play it. */
+const elObjectUrl = new WeakMap();
+/* The track currently pre-decoded into standbyAudio, if any. */
+let preloadedId = null;
+let preloadedIsBook = false;
+
+/* Binds a listener to BOTH elements, but only runs the handler for events
+   originating from the currently-active one. */
+function onAudio(eventName, handler){
+  for(const el of AUDIO_ELEMENTS){
+    el.addEventListener(eventName, (e)=>{
+      if(e && e.target && e.target !== audio) return; // standby element chatter — ignore
+      handler(e);
+    });
+  }
+}
+/* Volume/rate live on the element, so both must be kept in sync or a track
+   would change loudness or speed the moment the elements swap. */
+function applyAudioSettingsTo(el){
+  try{ el.volume = state.volume; }catch(e){}
+  try{ el.playbackRate = (state.mode==='book') ? state.bookSpeed : state.speed; }catch(e){}
+}
+function applyAudioSettingsToAll(){ for(const el of AUDIO_ELEMENTS) applyAudioSettingsTo(el); }
+/* Frees an element's decoded source. Never called on the active element
+   mid-playback — only when retiring a track that has already been replaced. */
+function releaseElement(el){
+  try{
+    const url = elObjectUrl.get(el);
+    if(url){ URL.revokeObjectURL(url); elObjectUrl.delete(el); }
+  }catch(e){}
+  try{ el.removeAttribute('src'); el.load(); }catch(e){}
+}
+/* Promotes the standby element to active. The caller is responsible for
+   having already started (or being about to start) playback on it. */
+function swapAudioElements(){
+  const outgoing = audio;
+  audio = standbyAudio;
+  standbyAudio = outgoing;
+  preloadedId = null;
+  preloadedIsBook = false;
+  return outgoing;
+}
 audio.volume = state.volume;
-let currentObjectUrl = null;
+applyAudioSettingsToAll();
+/* v3.8.0: object URLs are now tracked per element in elObjectUrl (see the
+   DUAL AUDIO ELEMENT section) rather than in a single shared variable, so
+   revoking the outgoing track's URL can never pull the source out from under
+   the element that is about to play. */
 
 async function fileForSong(s){
   if(s.file){
@@ -3273,6 +3373,76 @@ async function findUnplayableSongs(){
   return {unplayable};
 }
 
+/* Decodes a song into a specific element WITHOUT playing it. Returns the
+   File on success, or null if the song can't be opened/decoded. Shared by
+   both the immediate-play path and the ahead-of-time preload path so the
+   two can't drift apart in how they resolve files or build object URLs. */
+async function loadSongInto(el, s){
+  if(isWmaFile(s.name || s.path)) return null;
+  const file = await fileForSong(s);
+  if(!file) return null;
+  releaseElement(el);
+  const url = URL.createObjectURL(file);
+  elObjectUrl.set(el, url);
+  el.src = url;
+  applyAudioSettingsTo(el);
+  try{ el.load(); }catch(e){}
+  return file;
+}
+
+/* Pre-decodes whatever track would play next into the idle element, so the
+   transition costs no silent gap. Deliberately best-effort and silent on
+   failure: a preload that doesn't work just means the old load-on-demand
+   path runs at the transition, exactly as it did before v3.8.0. */
+let preloadToken = 0;
+async function preloadNextTrack(){
+  // Skipping tracks quickly can otherwise leave two preloads racing to own
+  // the same standby element; the newest wins and older ones bail out.
+  const myToken = ++preloadToken;
+  try{
+    if(state.mode === 'book') return;          // audiobooks handle their own chapters
+    if(state.repeat === 'one') return;         // the same element simply restarts
+    const nextId = peekNextTrackId();
+    if(!nextId || nextId === state.currentId) return;
+    if(preloadedId === nextId) return;         // already staged
+    const s = state.library.get(nextId);
+    if(!s || isWmaFile(s.name || s.path)) return;
+    const el = standbyAudio;
+    const file = await loadSongInto(el, s);
+    // Bail if a newer preload superseded this one, or if the elements
+    // swapped underneath us while the file was being resolved.
+    if(myToken !== preloadToken || el !== standbyAudio) return;
+    if(file){
+      preloadedId = nextId;
+      preloadedIsBook = false;
+      Log.info('Preloaded next track "'+s.title+'" into the standby element (gapless transition ready)');
+    }
+  }catch(e){ /* preloading must never break playback */ }
+}
+
+/* Works out which track nextTrack(true) would advance to, WITHOUT mutating
+   any queue/shuffle state. Kept deliberately in lockstep with nextTrack's
+   own branching — if these two ever disagree, the preloaded element simply
+   goes unused and the normal path takes over, so a mismatch degrades
+   gracefully rather than playing the wrong song. */
+function peekNextTrackId(){
+  if(state.queue.length===0) return null;
+  if(state.shuffle){
+    const pos = (state.shufflePos||0)+1;
+    if(pos >= state.shuffleOrder.length){
+      if(state.repeat!=='all') return null;
+      return null; // a reshuffle happens at the transition; don't guess at it
+    }
+    return state.queue[state.shuffleOrder[pos]] || null;
+  }
+  let ni = state.qIndex+1;
+  if(ni >= state.queue.length){
+    if(state.repeat!=='all') return null;
+    ni = 0;
+  }
+  return state.queue[ni] || null;
+}
+
 async function playSong(id){
   const s = state.library.get(id);
   if(!s) return;
@@ -3284,59 +3454,81 @@ async function playSong(id){
     toastDone('WMA can\u2019t be played in the browser \u2014 convert to mp3 on a computer first', false, true);
     return;
   }
-  const file = await fileForSong(s);
-  if(!file){
-    console.warn('[Reel] cannot open song:', {id, path:s.path, hasHandle:!!s.handle, hasFile:!!s.file, hasDirHandle:!!state.dirHandle});
-    // If we have a folder but the user denied permission, prompt to retry.
-    if(state.dirHandle){
-      toastDone('Folder access denied — tap the song again to allow', false, true);
-    }else{
-      toastDone('Can’t open this file — try re-importing', false, true);
-    }
-    return;
-  }
-  if(currentObjectUrl){ try{ URL.revokeObjectURL(currentObjectUrl); }catch(e){} }
-  // Diagnostic: capture audio state BEFORE the src swap. If auto-advance
-  // sometimes produces garbled output (v3.5.1 investigation), this line
-  // pairs with the "Playing" line's post-swap state below to show whether
-  // the element was in a clean just-ended state or still busy with the
-  // previous track when the new src was assigned.
-  // Close out the outgoing track's audio accounting before the src is swapped.
+
   logTrackDriftSummary('track replaced');
   Log.info('Loading "'+s.title+'" \u00b7 pre-swap '+audioDiag());
+
+  // Fast path: this exact track was already decoded into the standby
+  // element, so it can start immediately with no file read and no decode —
+  // this is what removes the silent window at a track transition.
+  const usedPreload = (preloadedId === id && !preloadedIsBook && standbyAudio.src);
+  preloadToken++;   // any in-flight preload is now stale; it will bail out
+  let file = null;
+  if(usedPreload){
+    Log.info('Using the preloaded standby element for "'+s.title+'" \u2014 no load needed (readyState='+standbyAudio.readyState+')');
+  }else{
+    file = await loadSongInto(standbyAudio, s);
+    if(!file){
+      console.warn('[Reel] cannot open song:', {id, path:s.path, hasHandle:!!s.handle, hasFile:!!s.file, hasDirHandle:!!state.dirHandle});
+      if(state.dirHandle){
+        toastDone('Folder access denied \u2014 tap the song again to allow', false, true);
+      }else{
+        toastDone('Can\u2019t open this file \u2014 try re-importing', false, true);
+      }
+      return;
+    }
+  }
+
+  const outgoing = audio;          // the element that was playing the previous track
+  swapAudioElements();             // standby (holding this track) becomes active
+  state.currentId = id;
+  applyAudioSettingsTo(audio);
+  if(state.eqEnabled) ensureEQ();
+  pushRecent(id);
   resetDriftAccounting();
   stallLoggedForSrc = false;
   waitLoggedForSrc = false;
   posStateErrorLoggedForSrc = false;
-  currentObjectUrl = URL.createObjectURL(file);
-  audio.src = currentObjectUrl;
-  state.currentId = id;
-  audio.playbackRate = state.speed;
-  if(state.eqEnabled) ensureEQ();
-  pushRecent(id);
+
   const loadStart = Date.now();
   try{
     markFreshTrackStart();
     pendingResumeReason = FRESH_TRACK_START;
     await audio.play();
     state.playing = true;
-    Log.info('Playing "'+s.title+'" by '+s.artist+' \u00b7 load-to-play '+(Date.now()-loadStart)+'ms \u00b7 '+audioDiag());
+    Log.info('Playing "'+s.title+'" by '+s.artist+' \u00b7 load-to-play '+(Date.now()-loadStart)+'ms'
+      +(usedPreload?' (gapless \u2014 preloaded)':'')+' \u00b7 '+audioDiag());
   }catch(e){
     state.playing = false;
     pendingResumeReason = null;
     const name = e && e.name;
     Log.warn('Native playback failed for "'+s.title+'" ('+s.path+'): '+(name||e));
-    if(name==='NotSupportedError'){
+    if(name==='NotSupportedError' && file){
       sniffAudioFormat(file).then(sniff=>{
         if(sniff) Log.warn('File "'+s.name+'" is named .'+extOf(s.name)+' but its actual content looks like: '+sniff.detected+' \u2014 '+sniff.size+' bytes, first bytes: '+sniff.hex);
       });
     }
-    toastDone('This format isn’t supported here', false, true);
+    toastDone('This format isn\u2019t supported here', false, true);
   }
+
+  // Retire the outgoing element only AFTER the new one is playing, so the
+  // output is never silent in between. Its own pause/emptied events are
+  // ignored by onAudio() since it is no longer the active element.
+  if(outgoing && outgoing !== audio){
+    try{ outgoing.pause(); }catch(e){}
+    releaseElement(outgoing);
+  }
+
   updateNowPlaying();
   updatePlayButtons();
   markPlayingRows();
   updateMediaSession(s);
+  // Stage the following track straight away. Doing it now (rather than near
+  // the end of this one) means the work happens while the app is most
+  // likely still awake, instead of depending on a timer firing in a
+  // backgrounded page — which is precisely the thing that can't be relied
+  // on here.
+  preloadNextTrack();
 }
 
 function setQueue(ids, startIndex){
@@ -3427,7 +3619,7 @@ function togglePlay(){
   updatePlayButtons();
 }
 
-audio.addEventListener('ended', ()=>{
+onAudio('ended', ()=>{
   if(state.mode==='book'){ bookOnEnded(); return; }
   const s = state.library.get(state.currentId);
   Log.info('Track ended \u2014 "'+(s?s.title:'?')+'" \u00b7 '+audioDiag());
@@ -3573,20 +3765,20 @@ function scheduleResumeRetries(reason){
    Waiting: playback stopped because the next frame isn't available yet
    (buffer starve). Both are one-per-song — if a bluetooth device is
    flaky through a whole song these would otherwise flood the log. */
-audio.addEventListener('stalled', ()=>{
+onAudio('stalled', ()=>{
   if(stallLoggedForSrc) return;
   stallLoggedForSrc = true;
   const s = state.library.get(state.currentId);
   Log.warn('Stalled \u2014 "'+(s?s.title:'?')+'" \u00b7 '+audioDiag()+' (further stalls on this track will not re-log)');
 });
-audio.addEventListener('waiting', ()=>{
+onAudio('waiting', ()=>{
   if(waitLoggedForSrc) return;
   waitLoggedForSrc = true;
   const s = state.library.get(state.currentId);
   Log.warn('Waiting for data \u2014 "'+(s?s.title:'?')+'" \u00b7 '+audioDiag()+' (further waits on this track will not re-log)');
 });
 
-audio.addEventListener('play', ()=>{
+onAudio('play', ()=>{
   lastPlayEventAt=Date.now();
   state.playing=true; userWantsPlaying=true;
   updatePlayButtons(); $('player').classList.remove('paused'); markPlayingRows();
@@ -3623,7 +3815,7 @@ audio.addEventListener('play', ()=>{
   }
   pendingResumeReason = null;
 });
-audio.addEventListener('pause', ()=>{
+onAudio('pause', ()=>{
   if(intentionalPause){
     intentionalPause = false;
     logPaused('intentional \u2014 '+pendingIntentionalPauseReason);
@@ -3798,8 +3990,8 @@ if(navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener==='f
     checkOutputAndDecide(state.currentId);
   });
 }
-audio.addEventListener('timeupdate', updateProgress);
-audio.addEventListener('loadedmetadata', ()=>{
+onAudio('timeupdate', updateProgress);
+onAudio('loadedmetadata', ()=>{
   if(state.mode==='book'){ onBookMetadata(); return; }
   const s = state.library.get(state.currentId);
   if(s && audio.duration && isFinite(audio.duration)){
@@ -4084,7 +4276,7 @@ const TRACED_MEDIA_EVENTS = ['abort','canplay','canplaythrough','durationchange'
 let lastTimeupdateLogAt = 0;
 function wireEventTrace(){
   for(const name of TRACED_MEDIA_EVENTS){
-    audio.addEventListener(name, ()=>{
+    onAudio(name, ()=>{
       if(!state.routeDiag) return; // verbose trace only while deep diagnostics are on
       Log.info('EVT '+name+' \u00b7 t='+(audio.currentTime||0).toFixed(2)
         +' paused='+audio.paused+' ready='+audio.readyState+' net='+audio.networkState
@@ -4094,7 +4286,7 @@ function wireEventTrace(){
   }
   // timeupdate drives the heartbeat ALWAYS (cheap, and it's what makes gap
   // analysis possible), but only logs occasionally so it can't flood.
-  audio.addEventListener('timeupdate', ()=>{
+  onAudio('timeupdate', ()=>{
     // Drift MUST be checked before the heartbeat advances — it compares the
     // current position against the previous heartbeat. This runs
     // unconditionally (not gated on the diagnostics toggle), because a silent
@@ -4114,9 +4306,9 @@ function wireEventTrace(){
   });
   // A seek legitimately decouples audio position from wall-clock time, so
   // drift must not be measured across one.
-  audio.addEventListener('seeking', ()=>suppressDrift(2000));
-  audio.addEventListener('seeked',  ()=>suppressDrift(2000));
-  audio.addEventListener('ratechange', ()=>suppressDrift(1500));
+  onAudio('seeking', ()=>suppressDrift(2000));
+  onAudio('seeked',  ()=>suppressDrift(2000));
+  onAudio('ratechange', ()=>suppressDrift(1500));
 }
 
 /* Page lifecycle. 'freeze'/'resume' are the explicit signals Chrome gives when
@@ -4558,7 +4750,7 @@ function handleExternalPlayRequest(){
   audio.play().catch(e=>{ pendingResumeReason = null; Log.warn('MediaSession play failed: '+(e&&e.name?e.name:String(e))); });
   return true;
 }
-audio.addEventListener('error', ()=>{
+onAudio('error', ()=>{
   // Some formats (WMA in particular — Chrome has never shipped a WMA
   // decoder, on Android or anywhere else) can fail to decode without
   // audio.play() ever rejecting; the failure only shows up here. There's
@@ -4754,7 +4946,7 @@ function clientXOf(e){ return e.touches&&e.touches[0]? e.touches[0].clientX : e.
 function setVolFromClientX(clientX){
   const t=$('volTrack').getBoundingClientRect();
   let pct=(clientX-t.left)/t.width; pct=Math.max(0,Math.min(1,pct));
-  state.volume=pct; audio.volume=pct; $('volFill').style.width=(pct*100)+'%';
+  state.volume=pct; applyAudioSettingsToAll(); $('volFill').style.width=(pct*100)+'%';
   persistPrefs();
 }
 
@@ -6266,7 +6458,7 @@ async function boot(){
       state.volume = (prefs.volume!=null)?prefs.volume:0.9;
       state.shuffle = !!prefs.shuffle;
       state.repeat = prefs.repeat||'off';
-      audio.volume = state.volume;
+      applyAudioSettingsToAll();
       $('volFill').style.width = (state.volume*100)+'%';
       $('btnShuffle').classList.toggle('active', state.shuffle);
       $('btnRepeat').classList.toggle('active', state.repeat!=='off');
@@ -6298,7 +6490,7 @@ async function boot(){
   }catch(e){}
   state.favSet = new Set(state.favorites);
   applyAccent(state.accent);
-  audio.playbackRate = state.speed;
+  applyAudioSettingsToAll();
   // load playlists
   try{
     const pls = await DB.get('playlists');
@@ -6513,7 +6705,7 @@ function openSmart(kind){
 }
 
 /* ---------- playback speed ---------- */
-function setSpeed(x){ state.speed=x; try{ audio.playbackRate=x; }catch(e){} persistPrefs(); }
+function setSpeed(x){ state.speed=x; applyAudioSettingsToAll(); persistPrefs(); }
 
 /* ---------- sleep timer ---------- */
 let sleepDeadline=0, sleepInterval=null, sleepEndOfTrack=false;
@@ -6553,28 +6745,39 @@ const EQ_PRESETS = {
   pop:    [-1,1,3,3,1,-1],
   treble: [0,0,0,2,5,7],
 };
-let eqCtx=null, eqSource=null, eqFilters=[];
+let eqCtx=null, eqSources=[], eqFilters=[];
 function ensureEQ(){
   if(eqCtx){ if(eqCtx.state==='suspended' && eqCtx.resume) eqCtx.resume().catch(()=>{}); return true; }
   try{
     const AC = window.AudioContext || window.webkitAudioContext;
     if(!AC) return false;
     eqCtx = new AC();
-    eqSource = eqCtx.createMediaElementSource(audio);
-    let node = eqSource;
+    // Build the filter chain first, then feed BOTH audio elements into it
+    // (v3.8.0). createMediaElementSource permanently rewires whichever
+    // element it's given, so with the gapless dual-element engine both must
+    // be routed through the EQ — otherwise the equaliser would silently
+    // apply to only every other track, depending on which element happened
+    // to be active.
+    let head = null, node = null;
     eqFilters = EQ_BANDS.map((f,i)=>{
       const bq = eqCtx.createBiquadFilter();
       bq.type = i===0 ? 'lowshelf' : (i===EQ_BANDS.length-1 ? 'highshelf' : 'peaking');
       bq.frequency.value = f;
       if(bq.type==='peaking') bq.Q.value = 1.0;
       bq.gain.value = state.eqEnabled ? (state.eqGains[i]||0) : 0;
-      node.connect(bq); node = bq;
+      if(node){ node.connect(bq); } else { head = bq; }
+      node = bq;
       return bq;
     });
     node.connect(eqCtx.destination);
+    eqSources = AUDIO_ELEMENTS.map(el=>{
+      const src = eqCtx.createMediaElementSource(el);
+      src.connect(head);
+      return src;
+    });
     if(eqCtx.state==='suspended' && eqCtx.resume) eqCtx.resume().catch(()=>{});
     return true;
-  }catch(e){ eqCtx=null; eqFilters=[]; return false; }
+  }catch(e){ eqCtx=null; eqFilters=[]; eqSources=[]; return false; }
 }
 function applyEQ(){
   if(!eqFilters.length) return;
@@ -6600,7 +6803,7 @@ function setEQPreset(name){
   applyEQ(); persistPrefs();
 }
 /* keep the audio graph awake after autoplay suspension */
-audio.addEventListener('play', ()=>{ if(eqCtx && eqCtx.state==='suspended' && eqCtx.resume) eqCtx.resume().catch(()=>{}); });
+onAudio('play', ()=>{ if(eqCtx && eqCtx.state==='suspended' && eqCtx.resume) eqCtx.resume().catch(()=>{}); });
 
 /* ---------- Settings screen ---------- */
 function currentEqPreset(){
@@ -7204,11 +7407,21 @@ async function playBookPart(partIndex, seekTime, autoplay){
     toastDone(state.booksDirHandle? 'Folder access needed — tap play again' : 'Can’t open this audiobook file', false, true);
     return;
   }
-  if(currentObjectUrl){ try{ URL.revokeObjectURL(currentObjectUrl); }catch(e){} }
-  currentObjectUrl = URL.createObjectURL(file);
+  // v3.8.0: chapters now go through the same dual-element swap as music
+  // tracks, so a chapter change is just as gapless as a track change —
+  // audiobook chapter boundaries are exactly as likely to hand Chrome a
+  // silent window to freeze the page on.
+  releaseElement(standbyAudio);
+  preloadedId = null; preloadedIsBook = false;
+  const bookUrl = URL.createObjectURL(file);
+  elObjectUrl.set(standbyAudio, bookUrl);
+  standbyAudio.src = bookUrl;
+  applyAudioSettingsTo(standbyAudio);
+  try{ standbyAudio.load(); }catch(e){}
   logTrackDriftSummary('chapter replaced');
   pendingBookSeek = seekTime||0;
-  audio.src = currentObjectUrl;
+  const outgoingBookEl = audio;
+  swapAudioElements();
   resetDriftAccounting();
   audio.playbackRate = state.bookSpeed;
   intentionalPause = false;
@@ -7220,6 +7433,10 @@ async function playBookPart(partIndex, seekTime, autoplay){
       await audio.play(); state.playing=true;
       Log.info('Playing audiobook "'+b.title+'" chapter '+(partIndex+1)+' \u00b7 '+audioDiag());
     }catch(e){ state.playing=false; pendingResumeReason=null; Log.warn('Audiobook playback failed: '+(e&&e.message?e.message:e)); }
+  }
+  if(outgoingBookEl && outgoingBookEl !== audio){
+    try{ outgoingBookEl.pause(); }catch(e){}
+    releaseElement(outgoingBookEl);
   }
   updatePlayButtons();
   updateBookMediaSession();
@@ -7405,7 +7622,7 @@ function openBookSpeedSheet(){
 }
 function setBookSpeed(v){
   state.bookSpeed = v;
-  if(state.mode==='book'){ try{ audio.playbackRate = v; }catch(e){} }
+  if(state.mode==='book'){ applyAudioSettingsToAll(); }
   persistPrefs();
   $('bpSpeedTxt').textContent = v.toFixed(1).replace(/\.0$/,'')+'×';
 }

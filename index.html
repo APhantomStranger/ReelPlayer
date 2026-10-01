@@ -1375,8 +1375,14 @@ const state = {
   routeDiag: false,         // when true, measure AudioContext.outputLatency to detect real route changes
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.8.0';
+const APP_VERSION = '3.8.1';
 const CHANGELOG = [
+  { v:'3.8.1', date:'Sep 30, 2026', items:[
+    'Fixed tracks occasionally stopping about a second in after a song change and refusing to resume from headphone controls. A real device log ("The Diamond") showed Android pausing a freshly started track six times in about 765ms. Reel\u2019s startup protection retried each pause instantly, every retry succeeded, and each was paused again a few milliseconds later, so all 5 allowed retries were spent in 0.6 seconds. The sixth pause arrived still inside the protection window but with no retries left, so the track was treated as a real stop and sat silent until the app was opened.',
+    'Startup retries are now spaced out (150ms, 300ms, 500ms, 750ms, 1s, 1.25s) instead of fired instantly, so a burst of pauses is waited out rather than fought one pause at a time. Extra pauses that arrive while a retry is already waiting are folded into that same retry instead of each using one up. The protection window is widened from 2 to 4 seconds to cover the extra time, and there is still a hard limit of 6 retries per track, so a genuinely flapping connection still can\u2019t loop forever.',
+    'A deliberate pause (your button, lock screen, or headset), skipping to another track, or turning the setting off while a retry is waiting all cancel it cleanly.',
+    'The next track is no longer preloaded in the same instant the current one starts. In the same log, the preload landed 14ms before the first pause of the burst. It isn\u2019t the root cause (the same bursts appear in logs from before gapless playback existed), but loading a second player during the most fragile moment of playback is avoidable risk. It now happens 5 seconds into each song, triggered by the song\u2019s own playback progress so it still works while the app is in the background.',
+  ]},
   { v:'3.8.0', date:'Sep 17, 2026', items:[
     'Gapless track transitions, built to attack the background-stall problem at what the logs point to as its source. Reel now uses two audio elements instead of one: the next track is fully decoded into an idle element while the current one is still playing, and at the transition the ready element simply starts and the two swap roles. Previously every track change tore down and rebuilt a single element, leaving a real silent window \u2014 measured at ~610ms in an actual device log between "ended" and the next "Playing".',
     'Why that window matters, from two real incidents rather than theory: tracks that STARTED while the app was backgrounded played for 9.81s and 9.82s respectively before stopping dead for 32.02s and 33.89s \u2014 no pause event, no waiting, no stalled, no events at all, meaning JavaScript itself had stopped running. A track that started while the app was VISIBLE played 378 seconds straight through in the background with 0.2% loss and zero interruptions. Two stalls beginning 9.81s and 9.82s after their track began is a timer, not resource contention; the working theory is that Chrome keeps a backgrounded page alive while it is audibly playing, and each track change handed it a silent moment to classify the page as freezable.',
@@ -3394,6 +3400,17 @@ async function loadSongInto(el, s){
    transition costs no silent gap. Deliberately best-effort and silent on
    failure: a preload that doesn't work just means the old load-on-demand
    path runs at the transition, exactly as it did before v3.8.0. */
+/* v3.8.1: preload is deferred until the current track is safely past its
+   start (see playSong). Set when a track starts, cleared once fired. */
+const PRELOAD_AFTER_SEC = 5;
+let preloadArmedForId = null;
+function maybeFireDeferredPreload(){
+  if(!preloadArmedForId || preloadArmedForId !== state.currentId) return;
+  if(state.mode === 'book' || audio.paused) return;
+  if((audio.currentTime||0) < PRELOAD_AFTER_SEC) return;
+  preloadArmedForId = null;
+  preloadNextTrack();
+}
 let preloadToken = 0;
 async function preloadNextTrack(){
   // Skipping tracks quickly can otherwise leave two preloads racing to own
@@ -3523,12 +3540,14 @@ async function playSong(id){
   updatePlayButtons();
   markPlayingRows();
   updateMediaSession(s);
-  // Stage the following track straight away. Doing it now (rather than near
-  // the end of this one) means the work happens while the app is most
-  // likely still awake, instead of depending on a timer firing in a
-  // backgrounded page — which is precisely the thing that can't be relied
-  // on here.
-  preloadNextTrack();
+  // v3.8.1: the next track is no longer staged in the same instant this
+  // one starts. A real log showed the preload landing 14ms before a burst
+  // of start-of-track pauses; loading a second player during the fragile
+  // first moments of playback is avoidable risk. It's now armed here and
+  // fired from timeupdate once this track has played PRELOAD_AFTER_SEC
+  // seconds. timeupdate comes from the media pipeline, so this still fires
+  // while backgrounded, unlike a timer.
+  preloadArmedForId = id;
 }
 
 function setQueue(ids, startIndex){
@@ -3709,13 +3728,51 @@ function requestPause(reason){
    flapping connection during this window can't retry indefinitely —
    v3.5.10 fixed a real bug where the old, resettable version of this
    did exactly that (~190 cycles in under 20 seconds on one real track). */
-const STARTUP_HICCUP_WINDOW_MS = 2000;
-const STARTUP_HICCUP_MAX_RETRIES = 5;
+/* v3.8.1: retries are now SPACED OUT instead of fired instantly.
+   Confirmed from a real device log (Sep 30, "The Diamond"): Android paused
+   a freshly started track six times in ~765ms. Each instant retry
+   succeeded, only to be paused again a few ms later, so all 5 retries
+   were burned in ~0.6s. The 6th pause landed still well inside the 2s
+   window but with no retries left, fell through to "stay stopped", and
+   the track sat dead until the app was reopened. Waiting a growing delay
+   before each retry lets a burst of focus churn finish instead of
+   fighting each pause the instant it lands. The window is widened to
+   cover the extra time the delays add, and the hard cap remains, so a
+   genuinely flapping connection still can't loop forever (the v3.5.10
+   ~190-cycle bug stays fixed). */
+const STARTUP_HICCUP_WINDOW_MS = 4000;
+const STARTUP_HICCUP_RETRY_DELAYS_MS = [150, 300, 500, 750, 1000, 1250];
+const STARTUP_HICCUP_MAX_RETRIES = STARTUP_HICCUP_RETRY_DELAYS_MS.length;
 let currentTrackStartedAt = 0;
 let hiccupRetryCount = 0;
+let hiccupRetryTimer = null;
 function markFreshTrackStart(){
   currentTrackStartedAt = Date.now();
   hiccupRetryCount = 0;
+  clearTimeout(hiccupRetryTimer); hiccupRetryTimer = null;
+}
+/* Schedules one delayed startup-hiccup retry. Re-checks everything at fire
+   time, so a deliberate pause, a skip, or the setting being turned off
+   during the wait all cancel it cleanly. */
+function scheduleHiccupRetry(forId, n, msSinceTrackStart){
+  const delay = STARTUP_HICCUP_RETRY_DELAYS_MS[n-1];
+  Log.info('Stop on media change: pause landed '+msSinceTrackStart+'ms after this track started \u2014 within the startup-hiccup window, retry '+n+' of '+STARTUP_HICCUP_MAX_RETRIES+' in '+delay+'ms');
+  clearTimeout(hiccupRetryTimer);
+  hiccupRetryTimer = setTimeout(()=>{
+    hiccupRetryTimer = null;
+    if(state.currentId !== forId){ Log.info('Startup-hiccup retry '+n+' cancelled: track changed'); return; }
+    if(!state.stopOnMediaChange){ Log.info('Startup-hiccup retry '+n+' cancelled: setting turned off'); return; }
+    if(intentionalPause || !userWantsPlaying){ Log.info('Startup-hiccup retry '+n+' cancelled: paused deliberately'); return; }
+    if(!audio.paused){ Log.info('Startup-hiccup retry '+n+' not needed: already playing again'); return; }
+    pendingResumeReason = 'startup-hiccup retry '+n+' (after '+delay+'ms wait, '+(Date.now()-currentTrackStartedAt)+'ms since track start)';
+    audio.play().then(()=>{
+      Log.info('Startup-hiccup retry '+n+' succeeded');
+    }).catch(e=>{
+      pendingResumeReason = null;
+      Log.info('Startup-hiccup retry '+n+' failed ('+(e&&e.name?e.name:String(e))+') \u2014 falling through to the device check');
+      checkOutputAndDecide(forId);
+    });
+  }, delay);
 }
 
 /* Retries a resume attempt a handful of times over several seconds.
@@ -3854,18 +3911,18 @@ onAudio('pause', ()=>{
 
   if(state.stopOnMediaChange){
     const msSinceTrackStart = currentTrackStartedAt ? (Date.now()-currentTrackStartedAt) : Infinity;
+    if(hiccupRetryTimer){
+      // A retry is already waiting; this pause is part of the same burst.
+      Log.info('Stop on media change: another pause during the same startup burst ('+msSinceTrackStart+'ms since track start) \u2014 the pending retry will handle it');
+      return;
+    }
     if(msSinceTrackStart < STARTUP_HICCUP_WINDOW_MS && hiccupRetryCount < STARTUP_HICCUP_MAX_RETRIES){
       hiccupRetryCount++;
-      Log.info('Stop on media change: pause landed '+msSinceTrackStart+'ms after this track started (retry '+hiccupRetryCount+' of '+STARTUP_HICCUP_MAX_RETRIES+') \u2014 within the startup-hiccup window, retrying instead of stopping');
-      pendingResumeReason = 'startup-hiccup retry '+hiccupRetryCount+' ('+msSinceTrackStart+'ms since track start)';
-      audio.play().then(()=>{
-        Log.info('Startup-hiccup retry '+hiccupRetryCount+' succeeded');
-      }).catch(e=>{
-        pendingResumeReason = null;
-        Log.info('Startup-hiccup retry '+hiccupRetryCount+' failed ('+(e&&e.name?e.name:String(e))+') \u2014 falling through to the device check');
-        checkOutputAndDecide(state.currentId);
-      });
+      scheduleHiccupRetry(state.currentId, hiccupRetryCount, msSinceTrackStart);
       return;
+    }
+    if(msSinceTrackStart < STARTUP_HICCUP_WINDOW_MS){
+      Log.warn('Stop on media change: startup retries exhausted ('+STARTUP_HICCUP_MAX_RETRIES+' used) at '+msSinceTrackStart+'ms \u2014 treating as a real stop');
     }
     checkOutputAndDecide(state.currentId);
     return;
@@ -3991,6 +4048,7 @@ if(navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener==='f
   });
 }
 onAudio('timeupdate', updateProgress);
+onAudio('timeupdate', maybeFireDeferredPreload);
 onAudio('loadedmetadata', ()=>{
   if(state.mode==='book'){ onBookMetadata(); return; }
   const s = state.library.get(state.currentId);

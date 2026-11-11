@@ -1375,8 +1375,12 @@ const state = {
   routeDiag: false,         // when true, measure AudioContext.outputLatency to detect real route changes
 };
 /* app metadata + changelog (newest first) */
-const APP_VERSION = '3.8.1';
+const APP_VERSION = '3.8.2';
 const CHANGELOG = [
+  { v:'3.8.2', date:'Nov 10, 2026', items:[
+    'A single song on repeat is now gapless too. With one song looping on repeat-all, Reel skipped preloading because the "next" song was the same as the current one, so every loop fell back to the old load path with about 250ms of silence. A real log showed "Underground Palace" looping this way, starting a loop with the app in the background, then going silent for 7.7 minutes with no pause recorded. The same song is now preloaded into the spare player, so each loop switches over with no gap. Shuffle with a single song is covered too.',
+    'Fixed the end-of-song summary in the debug log counting paused time as lost audio. A song that sat deliberately stopped for two hours was reported as "7282s lost". The summary now measures only the time the song was supposed to be playing, and notes separately how long it spent paused. Silent stalls, where the player claims to be playing but no audio moves, still count as lost, since catching those is what the summary is for.',
+  ]},
   { v:'3.8.1', date:'Sep 30, 2026', items:[
     'Fixed tracks occasionally stopping about a second in after a song change and refusing to resume from headphone controls. A real device log ("The Diamond") showed Android pausing a freshly started track six times in about 765ms. Reel\u2019s startup protection retried each pause instantly, every retry succeeded, and each was paused again a few milliseconds later, so all 5 allowed retries were spent in 0.6 seconds. The sixth pause arrived still inside the protection window but with no retries left, so the track was treated as a real stop and sat silent until the app was opened.',
     'Startup retries are now spaced out (150ms, 300ms, 500ms, 750ms, 1s, 1.25s) instead of fired instantly, so a burst of pauses is waited out rather than fought one pause at a time. Extra pauses that arrive while a retry is already waiting are folded into that same retry instead of each using one up. The protection window is widened from 2 to 4 seconds to cover the extra time, and there is still a hard limit of 6 retries per track, so a genuinely flapping connection still can\u2019t loop forever.',
@@ -3420,7 +3424,13 @@ async function preloadNextTrack(){
     if(state.mode === 'book') return;          // audiobooks handle their own chapters
     if(state.repeat === 'one') return;         // the same element simply restarts
     const nextId = peekNextTrackId();
-    if(!nextId || nextId === state.currentId) return;
+    // v3.8.2: the next track MAY be the same song (one song looping on
+    // repeat-all). That used to be skipped, so every loop fell back to the
+    // non-gapless load path with ~250ms of silence; a real log showed a
+    // 7.7-minute silent stall on exactly such a loop started in the
+    // background. The standby element is a separate player, so loading the
+    // same file into it is fine.
+    if(!nextId) return;
     if(preloadedId === nextId) return;         // already staged
     const s = state.library.get(nextId);
     if(!s || isWmaFile(s.name || s.path)) return;
@@ -3448,6 +3458,8 @@ function peekNextTrackId(){
     const pos = (state.shufflePos||0)+1;
     if(pos >= state.shuffleOrder.length){
       if(state.repeat!=='all') return null;
+      // A one-song queue reshuffles to that same song, so it IS predictable.
+      if(state.queue.length===1) return state.queue[0];
       return null; // a reshuffle happens at the transition; don't guess at it
     }
     return state.queue[state.shuffleOrder[pos]] || null;
@@ -4049,6 +4061,14 @@ if(navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener==='f
 }
 onAudio('timeupdate', updateProgress);
 onAudio('timeupdate', maybeFireDeferredPreload);
+onAudio('pause', ()=>{ if(trackSegStart){ trackPlayingMs += Date.now() - trackSegStart; trackSegStart = 0; } });
+onAudio('play', ()=>{ if(trackPlayStartWall && !trackSegStart) trackSegStart = Date.now(); });
+/* v3.8.2: refresh the drift heartbeat at every pause and resume. Otherwise
+   the first progress update after resuming is compared with a heartbeat
+   taken before the pause, and the paused stretch is misreported as a
+   silent stall. */
+onAudio('pause', ()=>recordHeartbeat());
+onAudio('play', ()=>recordHeartbeat());
 onAudio('loadedmetadata', ()=>{
   if(state.mode==='book'){ onBookMetadata(); return; }
   const s = state.library.get(state.currentId);
@@ -4354,6 +4374,7 @@ function wireEventTrace(){
     if(trackPlayStartWall === 0 && !audio.paused){
       trackPlayStartWall = Date.now();
       trackPlayStartCt = audio.currentTime || 0;
+      trackSegStart = trackPlayStartWall;
     }
     recordHeartbeat();
     if(state.routeDiag) sampleRoute();   // background-resilient route sampling
@@ -4521,11 +4542,24 @@ let trackPlayStartCt = null;
 function suppressDrift(ms){ driftSuppressUntil = Date.now() + (ms||1500); }
 
 /* Called at the start of every track so per-track accounting starts clean. */
+/* v3.8.2: wall-clock time spent PLAYING this track, excluding real pauses.
+   A real log showed "7282s lost" for a song that sat deliberately stopped
+   for two hours before another song was chosen; that time was never lost
+   audio. Time counts while the element reports playing, so a silent stall
+   (element claims playing, audio doesn't move) still counts as lost, which
+   is the case this accounting exists to catch. */
+let trackPlayingMs = 0;
+let trackSegStart = 0;
+function trackPlayingWallMs(){
+  return trackPlayingMs + (trackSegStart ? (Date.now() - trackSegStart) : 0);
+}
 function resetDriftAccounting(){
   trackLostMs = 0;
   trackDriftEvents = 0;
   trackPlayStartWall = 0;
   trackPlayStartCt = null;
+  trackPlayingMs = 0;
+  trackSegStart = 0;
   suppressDrift(1500); // ignore the decode/startup window
 }
 
@@ -4549,8 +4583,8 @@ function checkDrift(){
     // just an isolated blip.
     let pctTxt = '';
     if(trackPlayStartWall && trackPlayStartCt != null){
-      const elapsedWall = now - trackPlayStartWall;
-      if(elapsedWall > 0) pctTxt = ' \u00b7 track has lost '+(trackLostMs/1000).toFixed(2)+'s total so far ('+(trackLostMs/elapsedWall*100).toFixed(1)+'% of elapsed time, over '+trackDriftEvents+' interruption'+(trackDriftEvents===1?'':'s')+')';
+      const elapsedWall = trackPlayingWallMs();
+      if(elapsedWall > 0) pctTxt = ' \u00b7 track has lost '+(trackLostMs/1000).toFixed(2)+'s total so far ('+(trackLostMs/elapsedWall*100).toFixed(1)+'% of playing time, over '+trackDriftEvents+' interruption'+(trackDriftEvents===1?'':'s')+')';
     }
     Log.warn('*** SILENT AUDIO STOP: '+(shortfall/1000).toFixed(2)+'s of audio did not play '
       +'(wall '+(wallMs/1000).toFixed(2)+'s vs audio '+(audioMs/1000).toFixed(2)+'s) '
@@ -4564,13 +4598,16 @@ function checkDrift(){
    computes it itself instead of requiring it to be worked out by hand. */
 function logTrackDriftSummary(why){
   if(!trackPlayStartWall || trackPlayStartCt == null) return;
-  const wallMs = Date.now() - trackPlayStartWall;
+  const totalMs = Date.now() - trackPlayStartWall;
+  const wallMs = trackPlayingWallMs();
+  const pausedMs = Math.max(0, totalMs - wallMs);
   const audioMs = ((audio.currentTime||0) - trackPlayStartCt) * 1000;
-  const lost = wallMs - audioMs;
+  const lost = Math.max(0, wallMs - audioMs);
   if(wallMs < 3000) return; // too short to be meaningful
   const pct = wallMs>0 ? (lost/wallMs*100) : 0;
-  const line = 'TRACK AUDIO ACCOUNTING ('+why+'): wall '+(wallMs/1000).toFixed(2)+'s vs audio '+(audioMs/1000).toFixed(2)+'s \u2014 '
-    +(lost/1000).toFixed(2)+'s lost ('+pct.toFixed(1)+'%), '+trackDriftEvents+' interruption'+(trackDriftEvents===1?'':'s')+' detected';
+  const line = 'TRACK AUDIO ACCOUNTING ('+why+'): playing time '+(wallMs/1000).toFixed(2)+'s vs audio '+(audioMs/1000).toFixed(2)+'s \u2014 '
+    +(lost/1000).toFixed(2)+'s lost ('+pct.toFixed(1)+'%), '+trackDriftEvents+' interruption'+(trackDriftEvents===1?'':'s')+' detected'
+    +(pausedMs >= 1000 ? ' ('+(pausedMs/1000).toFixed(1)+'s spent paused, not counted)' : '');
   if(lost >= 1000) Log.warn('*** '+line); else Log.info(line);
 }
 
